@@ -649,15 +649,85 @@ fn with_confirmed_foreground<T>(
         body()
     })();
 
-    // Give the target message loop a bounded opportunity to consume the
-    // inserted sequence before restoring the user's prior foreground.
+    // Keep the target foreground until its thread has read every inserted
+    // event; restoring earlier hands the unread tail to another window (#4477).
     if result.is_ok() {
-        sleep(Duration::from_millis(40));
+        wait_for_target_input_drained(target, Duration::from_secs(5));
     }
     if !previous.0.is_null() && previous != target {
         let _ = unsafe { SetForegroundWindow(previous) };
     }
     result
+}
+
+/// Unassigned virtual key used as a harmless input-drain sentinel (the same
+/// "mask key" convention AutoHotkey uses): applications do not bind it and it
+/// produces no character.
+const DRAIN_SENTINEL_VK: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
+
+/// Block until the target's GUI thread has retrieved all input inserted so
+/// far, bounded by `timeout`. A sentinel key press is appended to the system
+/// input queue behind the caller's events; while attached to the target's
+/// input queue, `GetKeyState` reflects the queue's synchronous key state, whose
+/// toggle bit flips only when the target thread reads the sentinel key-down.
+/// Returns false (after the timeout, or immediately when attaching fails)
+/// without sending anything else.
+fn wait_for_target_input_drained(target: HWND, timeout: Duration) -> bool {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+
+    let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
+    let own_thread = unsafe { GetCurrentThreadId() };
+    if target_thread == 0 || target_thread == own_thread {
+        sleep(Duration::from_millis(40));
+        return false;
+    }
+    if !unsafe { AttachThreadInput(own_thread, target_thread, true) }.as_bool() {
+        sleep(Duration::from_millis(40));
+        return false;
+    }
+    let toggled = || unsafe { GetKeyState(DRAIN_SENTINEL_VK.0 as i32) } & 1;
+    let before = toggled();
+    let sentinel = [sentinel_key_input(false), sentinel_key_input(true)];
+    let sent = unsafe { SendInput(&sentinel, std::mem::size_of::<INPUT>() as i32) };
+    let deadline = Instant::now() + timeout;
+    let drained = sent as usize == sentinel.len()
+        && loop {
+            if toggled() != before {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            sleep(Duration::from_millis(5));
+        };
+    let _ = unsafe { AttachThreadInput(own_thread, target_thread, false) };
+    if !drained {
+        tracing::warn!(
+            "foreground input drain: target thread did not consume the sentinel within {} ms",
+            timeout.as_millis()
+        );
+    }
+    drained
+}
+
+fn sentinel_key_input(up: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: DRAIN_SENTINEL_VK,
+                wScan: 0,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
 }
 
 /// Build a single Unicode keyboard INPUT struct for one UTF-16 code unit,
