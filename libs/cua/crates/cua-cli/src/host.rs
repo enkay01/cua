@@ -307,7 +307,8 @@ pub enum SpacesCmd {
         space: String,
     },
     /// Forget a registered Space and its stored token. The sandbox keeps
-    /// running.
+    /// running. The `relay:<machine>` record of a Space that registered
+    /// itself and is gone (not connected) also leaves your relay directory.
     #[command(
         visible_alias = "remove",
         after_help = "Examples:
@@ -372,11 +373,15 @@ pub enum SpacesCmd {
         /// Space id, address or display name.
         space: String,
     },
-    /// Take a Space off the relay (every share with it ends).
+    /// Take a Space off the relay (every share with it ends). With a
+    /// `relay:<machine>` id, removes that machine's record from your relay
+    /// directory: a Space that registered itself (also after it was
+    /// deleted), or a machine of yours that is gone. Only its owner can.
     #[command(
         name = "relay-unregister",
         after_help = "Examples:
-  cua spaces relay-unregister local:studio"
+  cua spaces relay-unregister local:studio
+  cua spaces relay-unregister relay:space-0123abcd4567ef89"
     )]
     RelayUnregister {
         /// Space id, address or display name.
@@ -1464,9 +1469,12 @@ fn grouped_lines(list: &[cua_spaces::SpaceInfo]) -> Vec<String> {
             s.spacesd_version,
             width = 48usize.saturating_sub(indent.len()),
         );
-        // A Space turned off says so (`cua spaces start` turns it on).
+        // A Space turned off says so (`cua spaces start` turns it on), and
+        // a relay machine that is not connected (off, or a Space that is
+        // gone: `cua spaces relay-unregister` removes its record).
         match s.power_state.as_str() {
             "suspended" | "stopped" => format!("{} ({})", line.trim_end(), s.power_state),
+            _ if s.online == Some(false) => format!("{} (offline)", line.trim_end()),
             _ => line,
         }
     };
@@ -1784,6 +1792,7 @@ mod tests {
             cloud: String::new(),
             cloud_place: String::new(),
             cloud_delete: String::new(),
+            online: None,
         };
         let lines = grouped_lines(&[
             space("relay:space-1", "mini1234"),
@@ -1814,6 +1823,15 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(lines.len(), 2, "{lines:?}");
+        // A relay machine that is not connected says so; a stale record is
+        // not shown as a live Space.
+        let mut stale = space("relay:space-3", "");
+        stale.online = Some(false);
+        let mut live = space("relay:space-4", "");
+        live.online = Some(true);
+        let lines = grouped_lines(&[stale, live]);
+        assert!(lines[0].ends_with("(offline)"), "{lines:?}");
+        assert!(!lines[1].contains("offline"), "{lines:?}");
     }
 
     #[test]

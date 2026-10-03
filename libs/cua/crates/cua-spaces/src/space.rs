@@ -503,6 +503,11 @@ pub struct SpaceInfo {
     /// for other Spaces.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cloud_delete: String,
+    /// A relay machine (`relay:<id>`): whether it is connected to the relay
+    /// now (`false` for a machine that is off, or a Space that is gone and
+    /// left a stale record). `None` for every other Space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
 }
 
 impl SpaceInfo {
@@ -535,6 +540,7 @@ impl SpaceInfo {
             cloud: record.cloud.clone(),
             cloud_place: record.cloud_place.clone(),
             cloud_delete: record.cloud_delete.clone(),
+            online: None,
         })
     }
 }

@@ -112,6 +112,10 @@ pub(super) async fn call_on(space: &Space, tool: &str, mut arguments: Value) -> 
 pub const PHASE_READY: &str = "ready";
 /// See [`PHASE_READY`].
 pub const PHASE_STARTING: &str = "starting";
+/// A relay machine the relay does not reach now: a machine that is off, or
+/// a Space that is gone and left its record (`relay_unregister_space`
+/// removes it).
+pub const PHASE_OFFLINE: &str = "offline";
 
 async fn dispatch(
     spaces: &Spaces,
@@ -171,7 +175,16 @@ async fn dispatch(
                 .list_all()
                 .await?
                 .iter()
-                .map(|info| with(info, row_extra(info, &direct_hosts, PHASE_READY)))
+                .map(|info| {
+                    // A relay machine that is not connected is not ready (a
+                    // Space that is gone left its record; a host is off).
+                    let phase = if info.online == Some(false) {
+                        PHASE_OFFLINE
+                    } else {
+                        PHASE_READY
+                    };
+                    with(info, row_extra(info, &direct_hosts, phase))
+                })
                 .collect();
             Ok(ToolOutcome::json(&rows))
         }
