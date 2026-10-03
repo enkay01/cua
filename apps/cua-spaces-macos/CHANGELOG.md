@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/trycua/cua/compare/cua-spaces-v0.5.0...cua-spaces-v0.5.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **spaces-macos:** make a spare Mac a Spaces host you can use from another Mac ([#4512](https://github.com/trycua/cua/issues/4512)) ([410578a](https://github.com/trycua/cua/commit/410578a4a18e91fbee5d0a169342e3fb669a5bb9))
+
 ## [0.5.0](https://github.com/trycua/cua/compare/cua-spaces-v0.4.0...cua-spaces-v0.5.0) (2026-10-03)
 
 
