@@ -372,7 +372,7 @@ impl Tool for GetWindowStateTool {
         // and native dimensions, the WindowServer bounds it was validated
         // against, and the raw capture's backing scale.
         let mut screenshot_frame_error = None;
-        let mut screenshot_resize_scale = None;
+        let mut screenshot_geometry = None;
         let screenshot = if should_capture {
             let out_file = screenshot_out_file.clone();
             let res = tokio::task::spawn_blocking(move || -> Result<
@@ -450,7 +450,8 @@ impl Tool for GetWindowStateTool {
             match res {
                 Ok(Ok((png, file_path, w, h, orig_w, orig_h, bounds, scale))) => {
                     if !observation_only {
-                        screenshot_resize_scale = Some(orig_w as f64 / w as f64);
+                        screenshot_geometry =
+                            cua_driver_core::ScreenshotGeometry::new(w, h, orig_w, orig_h);
                     }
                     Some((png, file_path, w, h, orig_w, orig_h, bounds, scale))
                 }
@@ -472,6 +473,8 @@ impl Tool for GetWindowStateTool {
 
         // Capture screenshot dimensions before consuming.
         let screenshot_dims = screenshot.as_ref().map(|(_, _, w, h, _, _, _, _)| (*w, *h));
+        let screenshot_native_dims =
+            screenshot.as_ref().map(|(_, _, _, _, nw, nh, _, _)| (*nw, *nh));
         let screenshot_file_path = screenshot
             .as_ref()
             .and_then(|(_, fp, _, _, _, _, _, _)| fp.clone());
@@ -526,7 +529,7 @@ impl Tool for GetWindowStateTool {
             .unwrap_or_default();
 
         let snapshot_payload = prepared_snapshot.or_else(|| {
-            screenshot_resize_scale
+            screenshot_geometry
                 .is_some()
                 .then(|| crate::ax::snapshot::AxSnapshot::from_nodes(&[]))
         });
@@ -538,7 +541,7 @@ impl Tool for GetWindowStateTool {
                     u64::from(window_id),
                     payload,
                     session_id.as_deref(),
-                    screenshot_resize_scale,
+                    screenshot_geometry,
                 )
             })
             .unzip();
@@ -578,11 +581,13 @@ impl Tool for GetWindowStateTool {
         // Screenshot pixels of the delivered capture: window origin in screen
         // points, delivered pixels per point (backing scale x downsizing).
         let elements_json = match (screenshot_frame.as_ref(), screenshot_dims) {
-            (Some((bounds, _)), Some((width, _))) if bounds.width > 0.0 => {
+            (Some((bounds, _)), Some((width, height)))
+                if bounds.width > 0.0 && bounds.height > 0.0 =>
+            {
                 cua_driver_core::element_frame::with_screenshot_frames(
                     elements_json,
                     (bounds.x, bounds.y),
-                    f64::from(width) / bounds.width,
+                    (f64::from(width) / bounds.width, f64::from(height) / bounds.height),
                 )
             }
             _ => elements_json,
@@ -739,6 +744,10 @@ impl Tool for GetWindowStateTool {
             // `mimeType` on the protocol image part — this mirrors it onto
             // the structured side. Additive: keeps every existing field.
             structured["screenshot_mime_type"] = serde_json::json!("image/png");
+        }
+        if let Some((nw, nh)) = screenshot_native_dims {
+            structured["native_width"] = serde_json::json!(nw);
+            structured["native_height"] = serde_json::json!(nh);
         }
         if let Some((bounds, scale)) = screenshot_frame {
             structured["window_bounds"] = serde_json::json!({

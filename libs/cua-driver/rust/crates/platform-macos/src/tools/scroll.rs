@@ -397,7 +397,7 @@ impl Tool for ScrollTool {
                 Ok(Err(refusal)) => return refusal,
                 Err(_) => None,
             }
-        } else if let (Some(mut cx), Some(mut cy)) = (x_arg, y_arg) {
+        } else if let (Some(cx), Some(cy)) = (x_arg, y_arg) {
             // Targeted x,y are window-local screenshot pixels and REQUIRE a
             // window_id to anchor the window→screen conversion (schema contract).
             // Without one, refuse rather than scrolling at screen-absolute coords.
@@ -407,15 +407,14 @@ impl Tool for ScrollTool {
                 );
             }
             // Pixel path: x,y are window-local screenshot pixels. Mirror the
-            // click pixel path — undo any session downscale, then translate
+            // click pixel path — validate bounds, undo any session downscale, then translate
             // through the shared window frame (which refuses a window with no
             // live frame rather than scrolling at screen-absolute coords).
-            let ratio = match super::screenshot_scale(&self.state, &args, pid, window_id) {
-                Ok(ratio) => ratio,
-                Err(refusal) => return refusal,
+            let (target_cx, target_cy) = {
+                let (nx, ny) =
+                    super::screenshot_point(&self.state, &args, pid, window_id, cx, cy)?;
+                (nx as f64, ny as f64)
             };
-            cx *= ratio;
-            cy *= ratio;
             let Some(wid) = window_id else {
                 // Unreachable: the None case refused above. Kept explicit so a
                 // future edit cannot reintroduce the screen-absolute fallback.
@@ -425,7 +424,7 @@ impl Tool for ScrollTool {
             };
             match super::px_frame::resolve_or_refuse(wid).await {
                 Ok(frame) => {
-                    let (sx, sy, lx, ly) = frame.to_screen(cx, cy);
+                    let (sx, sy, lx, ly) = frame.to_screen(target_cx, target_cy);
                     Some(WheelTarget {
                         screen_x: sx,
                         screen_y: sy,

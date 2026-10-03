@@ -630,12 +630,26 @@ impl ToolState {
     }
 }
 
+fn screenshot_point(
+    state: &ToolState,
+    args: &Value,
+    pid: u32,
+    window_id: Option<u64>,
+    x: f64,
+    y: f64,
+) -> Result<(i32, i32), ToolResult> {
+    state
+        .snapshots
+        .screenshot_point(pid as i32, window_id, args, x, y)
+}
+
+#[allow(dead_code)]
 fn screenshot_scale(
     state: &ToolState,
     args: &Value,
     pid: u32,
     window_id: Option<u64>,
-) -> Result<f64, ToolResult> {
+) -> Result<(f64, f64), ToolResult> {
     state
         .snapshots
         .screenshot_scale(pid as i32, window_id, args)
@@ -909,9 +923,10 @@ impl Tool for ListWindowsTool {
                 explicit fallback instead of relying on array order. The macOS-specific \
                 on_current_space / space_ids fields are \
                 omitted on Windows; current_space_id is null.\n\n\
-                Inputs: pid (optional pid filter), on_screen_only (bool, default false).".into(),
+                Inputs: pid (optional pid filter), app_name (optional application name filter), on_screen_only (bool, default false).".into(),
             input_schema: json!({"type":"object","properties":{
                 "pid":{"type":"integer","description":"Optional pid filter. When set, only this pid's windows are returned."},
+                "app_name":{"type":"string","description":"Optional application name filter (case-insensitive, ignoring trailing .exe). When set, only windows from matching apps are returned."},
                 "on_screen_only":{"type":"boolean","description":"When true, drop windows that aren't currently on-screen. Default false."}
             },"additionalProperties":false}),
             read_only: true, destructive: false, idempotent: true, open_world: false,
@@ -921,6 +936,7 @@ impl Tool for ListWindowsTool {
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
         let filter_pid = args.opt_u64("pid").map(|v| v as u32);
+        let filter_app_name = args.opt_str("app_name");
         let on_screen_only = args.bool_or("on_screen_only", false);
         let (mut windows, pid_to_name) = tokio::task::spawn_blocking(move || {
             let wins = crate::win32::list_windows(filter_pid);
@@ -933,6 +949,9 @@ impl Tool for ListWindowsTool {
         .unwrap_or_default();
         if on_screen_only {
             windows.retain(|w| w.is_on_screen);
+        }
+        if let Some(app_filter) = filter_app_name.as_deref() {
+            windows.retain(|w| cua_driver_core::app_name_matches(&w.app_name, app_filter));
         }
 
         // Swift surfaces a warning when a pid filter matches nothing.
@@ -1462,9 +1481,11 @@ impl Tool for GetWindowStateTool {
             Ok((tree_opt, screenshot_opt, screenshot_err)) => {
                 let mut content = Vec::new();
                 let mut structured = json!({ "window_id": hwnd, "pid": pid });
-                let screenshot_scale = screenshot_opt
+                let screenshot_geometry = screenshot_opt
                     .as_ref()
-                    .map(|(_, _, w, _, native_w, _, _)| *native_w as f64 / *w as f64);
+                    .and_then(|(_, _, w, h, native_w, native_h, _)| {
+                        cua_driver_core::ScreenshotGeometry::new(*w, *h, *native_w, *native_h)
+                    });
                 let mut published_snapshot = false;
                 let mut invalidated = Vec::new();
 
@@ -1499,7 +1520,7 @@ impl Tool for GetWindowStateTool {
                                 hwnd,
                                 payload,
                                 session_id.as_deref(),
-                                screenshot_scale,
+                                screenshot_geometry,
                             )
                         })
                         .flatten()
@@ -1526,12 +1547,12 @@ impl Tool for GetWindowStateTool {
                     // bitmap origin (the inverse of the pixel tools'
                     // `bitmap_to_screen`), downsized by delivered/native.
                     let elements = match screenshot_opt.as_ref() {
-                        Some((_, _, w, _, native_w, _, _)) if *native_w > 0 => {
+                        Some((_, _, w, h, native_w, native_h, _)) if *native_w > 0 && *native_h > 0 => {
                             let (ox, oy) = bitmap_to_screen(hwnd, 0, 0);
                             cua_driver_core::element_frame::with_screenshot_frames(
                                 elements,
                                 (f64::from(ox), f64::from(oy)),
-                                f64::from(*w) / f64::from(*native_w),
+                                (f64::from(*w) / f64::from(*native_w), f64::from(*h) / f64::from(*native_h)),
                             )
                         }
                         _ => elements,
@@ -1588,7 +1609,7 @@ impl Tool for GetWindowStateTool {
                     }
                 }
 
-                if !observation_only && !published_snapshot && screenshot_scale.is_some() {
+                if !observation_only && !published_snapshot && screenshot_geometry.is_some() {
                     let payload = crate::uia::snapshot::UiaSnapshot::from_nodes(
                         &[],
                         crate::uia::snapshot::SnapshotKind::Uia,
@@ -1598,7 +1619,7 @@ impl Tool for GetWindowStateTool {
                         hwnd,
                         payload,
                         session_id.as_deref(),
-                        screenshot_scale,
+                        screenshot_geometry,
                     ) {
                         invalidated.extend(replaced);
                     }
@@ -1664,6 +1685,8 @@ impl Tool for GetWindowStateTool {
                     }
                     structured["screenshot_width"] = json!(w);
                     structured["screenshot_height"] = json!(h);
+                    structured["native_width"] = json!(native_w);
+                    structured["native_height"] = json!(native_h);
                     // Surface 7: mirror the MCP image part's `mimeType` onto
                     // the structured payload so consumers don't have to sniff
                     // magic bytes off the base64 to know the format.
@@ -2118,8 +2141,9 @@ impl Tool for LaunchAppTool {
                 shell parsing path. A miss falls back to ShellExecuteEx's PATH search.\n\n\
                 Returns the launched app's pid, name, active flag, AND a `windows` array — \
                 same per-window shape `list_windows` returns. When the launch settles but no \
-                window has materialized yet (transient; rare), `windows` comes back empty — \
-                call `list_windows(pid)` explicitly a moment later. `bundle_id` in the \
+                window has materialized yet (transient; rare, e.g. launcher stub or UWP broker), \
+                `windows` comes back empty — call `list_windows(pid)` or `list_windows(app_name=...)` \
+                explicitly a moment later. `bundle_id` in the \
                 response is set to the AUMID actually used for packaged-app launches and \
                 `null` for ShellExecuteEx launches.\n\n\
                 Windows-only field: `path` (Swift uses `bundle_id` since macOS apps resolve via \
@@ -4021,39 +4045,34 @@ impl Tool for ClickTool {
                 Ok(Err(error)) => ToolResult::error(error.to_string()),
                 Err(error) => ToolResult::error(format!("Task error: {error}")),
             }
-        } else if let (Some(mut px), Some(mut py)) = (x, y) {
+        } else if let (Some(px), Some(py)) = (x, y) {
             let from_zoom = args
                 .get("from_zoom")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if let Some((mapped_x, mapped_y)) = capture_point {
+            let (target_px, target_py) = if let Some((mapped_x, mapped_y)) = capture_point {
                 let (mapped_x, mapped_y) =
                     match crate::capture_admission::round_action_point(mapped_x, mapped_y) {
                         Ok(point) => point,
                         Err(error) => return capture_admission_refusal(error),
                     };
-                px = f64::from(mapped_x);
-                py = f64::from(mapped_y);
+                (mapped_x, mapped_y)
             } else if from_zoom {
                 match self.state.zoom_context(&args, pid, Some(hwnd)) {
                     Ok(ctx) => {
                         let (wx, wy) = ctx.zoom_to_window(px, py);
-                        px = wx;
-                        py = wy;
+                        (wx.round() as i32, wy.round() as i32)
                     }
                     Err(refusal) => return refusal,
                 }
             } else if !args.bool_or("_native_coordinates", false) {
-                let ratio = match screenshot_scale(&self.state, &args, pid, Some(hwnd)) {
-                    Ok(ratio) => ratio,
-                    Err(refusal) => return refusal,
-                };
-                px *= ratio;
-                py *= ratio;
-            }
-            // px/py are bitmap pixels — see `bitmap_to_screen` for the
+                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+            } else {
+                (px.round() as i32, py.round() as i32)
+            };
+            // target_px/target_py are bitmap pixels — see `bitmap_to_screen` for the
             // mapping (DWM-frame top-left + 1-px inset, NOT ClientToScreen).
-            let (sx_i, sy_i) = bitmap_to_screen(hwnd, px as i32, py as i32);
+            let (sx_i, sy_i) = bitmap_to_screen(hwnd, target_px, target_py);
             let (sx, sy) = (sx_i as f64, sy_i as f64);
             pin_overlay_above(&cursor_key, hwnd);
             overlay_glide_to(&cursor_key, sx, sy).await;
@@ -6311,7 +6330,9 @@ impl Tool for ScrollTool {
                 return ToolResult::error("scroll requires x and y together.");
             }
             let center = if let (Some(x), Some(y)) = (px, py) {
-                Some(bitmap_to_screen(hwnd, x as i32, y as i32))
+                let (target_x, target_y) =
+                    screenshot_point(&self.state, &args, pid, Some(hwnd), x, y)?;
+                Some(bitmap_to_screen(hwnd, target_x, target_y))
             } else {
                 tokio::task::spawn_blocking({
                     let admitted = admitted.clone();
@@ -6824,31 +6845,25 @@ impl Tool for DoubleClickTool {
                 Ok(Err(e)) => ToolResult::error(e.to_string()),
                 Err(e) => ToolResult::error(format!("Task error: {e}")),
             }
-        } else if let (Some(mut px), Some(mut py)) = (x, y) {
+        } else if let (Some(px), Some(py)) = (x, y) {
             let from_zoom = args
                 .get("from_zoom")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if from_zoom {
+            let (target_px, target_py) = if from_zoom {
                 match self.state.zoom_context(&args, pid, Some(hwnd)) {
                     Ok(ctx) => {
                         let (wx, wy) = ctx.zoom_to_window(px, py);
-                        px = wx;
-                        py = wy;
+                        (wx.round() as i32, wy.round() as i32)
                     }
                     Err(refusal) => return refusal,
                 }
             } else {
-                let ratio = match screenshot_scale(&self.state, &args, pid, Some(hwnd)) {
-                    Ok(ratio) => ratio,
-                    Err(refusal) => return refusal,
-                };
-                px *= ratio;
-                py *= ratio;
-            }
+                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+            };
             // bitmap pixels -> screen via DWM-frame origin (see
             // `bitmap_to_screen` doc for why ClientToScreen is wrong).
-            let (sx_i, sy_i) = bitmap_to_screen(hwnd, px as i32, py as i32);
+            let (sx_i, sy_i) = bitmap_to_screen(hwnd, target_px, target_py);
             let (sx, sy) = (sx_i as f64, sy_i as f64);
             pin_overlay_above(&cursor_key, hwnd);
             overlay_glide_to(&cursor_key, sx, sy).await;
@@ -6921,7 +6936,7 @@ impl Tool for DoubleClickTool {
                     Err(e) => ToolResult::error(format!("Task error: {e}")),
                 };
             }
-            let (xi, yi) = (px as i32, py as i32);
+            let (xi, yi) = (target_px, target_py);
             // Chromium/Electron silently drops PostMessage clicks (#1984) — route via SendInput.
             if let Some(r) =
                 chromium_click_short_circuit(hwnd, sx_i, sy_i, 2, "left", pid, "double-click").await
@@ -7175,31 +7190,25 @@ impl Tool for RightClickTool {
                 Ok(Err(e)) => ToolResult::error(e.to_string()),
                 Err(e) => ToolResult::error(format!("Task error: {e}")),
             }
-        } else if let (Some(mut px), Some(mut py)) = (x, y) {
+        } else if let (Some(px), Some(py)) = (x, y) {
             let from_zoom = args
                 .get("from_zoom")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if from_zoom {
+            let (target_px, target_py) = if from_zoom {
                 match self.state.zoom_context(&args, pid, Some(hwnd)) {
                     Ok(ctx) => {
                         let (wx, wy) = ctx.zoom_to_window(px, py);
-                        px = wx;
-                        py = wy;
+                        (wx.round() as i32, wy.round() as i32)
                     }
                     Err(refusal) => return refusal,
                 }
             } else {
-                let ratio = match screenshot_scale(&self.state, &args, pid, Some(hwnd)) {
-                    Ok(ratio) => ratio,
-                    Err(refusal) => return refusal,
-                };
-                px *= ratio;
-                py *= ratio;
-            }
+                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+            };
             // bitmap pixels -> screen via DWM-frame origin (see
             // `bitmap_to_screen` doc).
-            let (sx_i, sy_i) = bitmap_to_screen(hwnd, px as i32, py as i32);
+            let (sx_i, sy_i) = bitmap_to_screen(hwnd, target_px, target_py);
             let (sx, sy) = (sx_i as f64, sy_i as f64);
             pin_overlay_above(&cursor_key, hwnd);
             overlay_glide_to(&cursor_key, sx, sy).await;
@@ -7270,7 +7279,7 @@ impl Tool for RightClickTool {
                     Err(e) => ToolResult::error(format!("Task error: {e}")),
                 };
             }
-            let (xi, yi) = (px as i32, py as i32);
+            let (xi, yi) = (target_px, target_py);
             // Chromium/Electron silently drops PostMessage clicks (#1984) — route via SendInput.
             if let Some(r) =
                 chromium_click_short_circuit(hwnd, sx_i, sy_i, 1, "right", pid, "right-click").await
@@ -7412,7 +7421,7 @@ impl Tool for DragTool {
         let from_y_opt = coerce("from_y");
         let to_x_opt = coerce("to_x");
         let to_y_opt = coerce("to_y");
-        let (mut from_x, mut from_y, mut to_x, mut to_y) =
+        let (from_x, from_y, to_x, to_y) =
             match (from_x_opt, from_y_opt, to_x_opt, to_y_opt) {
                 (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
                 _ => {
@@ -7428,28 +7437,25 @@ impl Tool for DragTool {
         let button = args.str_or("button", "left");
         let from_zoom = args.bool_or("from_zoom", false);
 
-        if from_zoom {
+        let (from_target_x, from_target_y, to_target_x, to_target_y) = if from_zoom {
             match self.state.zoom_context(&args, pid, hwnd_opt) {
                 Ok(ctx) => {
                     let (wx, wy) = ctx.zoom_to_window(from_x, from_y);
                     let (wx2, wy2) = ctx.zoom_to_window(to_x, to_y);
-                    from_x = wx;
-                    from_y = wy;
-                    to_x = wx2;
-                    to_y = wy2;
+                    (
+                        wx.round() as i32,
+                        wy.round() as i32,
+                        wx2.round() as i32,
+                        wy2.round() as i32,
+                    )
                 }
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match screenshot_scale(&self.state, &args, pid, hwnd_opt) {
-                Ok(ratio) => ratio,
-                Err(refusal) => return refusal,
-            };
-            from_x *= ratio;
-            from_y *= ratio;
-            to_x *= ratio;
-            to_y *= ratio;
-        }
+            let (fx, fy) = screenshot_point(&self.state, &args, pid, hwnd_opt, from_x, from_y)?;
+            let (tx, ty) = screenshot_point(&self.state, &args, pid, hwnd_opt, to_x, to_y)?;
+            (fx, fy, tx, ty)
+        };
 
         let hwnd = match hwnd_opt {
             Some(h) => h,
@@ -7472,8 +7478,8 @@ impl Tool for DragTool {
         // Compute screen-coord endpoints. Same correction as the click
         // tools — bitmap pixels are anchored to the DWM-frame top-left,
         // not the client area top-left (see `bitmap_to_screen` doc).
-        let (sx_from, sy_from) = bitmap_to_screen(hwnd, from_x as i32, from_y as i32);
-        let (sx_to, sy_to) = bitmap_to_screen(hwnd, to_x as i32, to_y as i32);
+        let (sx_from, sy_from) = bitmap_to_screen(hwnd, from_target_x, from_target_y);
+        let (sx_to, sy_to) = bitmap_to_screen(hwnd, to_target_x, to_target_y);
 
         // delivery_mode:"background" on WinUI3: a pointer drag can't both land and
         // hold the contract — the content island only consumes real
@@ -8826,12 +8832,8 @@ impl Tool for ZoomTool {
             Ok(context) => context,
             Err(refusal) => return refusal,
         };
-        let (nx1, ny1, nx2, ny2) = (
-            x1 * screenshot.scale,
-            y1 * screenshot.scale,
-            x2 * screenshot.scale,
-            y2 * screenshot.scale,
-        );
+        let (nx1, ny1) = screenshot.geometry.to_native_f64(x1, y1)?;
+        let (nx2, ny2) = screenshot.geometry.to_native_f64(x2, y2)?;
 
         let state = self.state.clone();
         let result = tokio::task::spawn_blocking(move || {

@@ -95,16 +95,12 @@ impl Tool for ZoomTool {
             return ToolResult::error("x2 must be > x1 and y2 must be > y1");
         }
 
-        let (x1, y1, x2, y2) = (
-            x1 * screenshot.scale,
-            y1 * screenshot.scale,
-            x2 * screenshot.scale,
-            y2 * screenshot.scale,
-        );
+        let (nx1, ny1) = screenshot.geometry.to_native_f64(x1, y1)?;
+        let (nx2, ny2) = screenshot.geometry.to_native_f64(x2, y2)?;
         let state = self.state.clone();
         let result = tokio::task::spawn_blocking(move || {
             let png_bytes = crate::capture::screenshot_window_bytes(window_id)?;
-            cursor_overlay::capture_utils::crop_png_to_jpeg(&png_bytes, x1, y1, x2, y2, 500)
+            cursor_overlay::capture_utils::crop_png_to_jpeg(&png_bytes, nx1, ny1, nx2, ny2, 500)
         })
         .await;
 
@@ -129,7 +125,7 @@ impl Tool for ZoomTool {
                     content: vec![
                         Content::image_jpeg(b64),
                         Content::text(format!(
-                            "Zoom region ({x1:.0},{y1:.0})–({x2:.0},{y2:.0}) → {w}×{h} px JPEG."
+                            "Zoom region ({nx1:.0},{ny1:.0})–({nx2:.0},{ny2:.0}) → {w}×{h} px JPEG."
                         )),
                     ],
                     is_error: None,

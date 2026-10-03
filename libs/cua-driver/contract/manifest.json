@@ -1821,6 +1821,20 @@
               "null"
             ]
           },
+          "native_height": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "native_width": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "pid": {
             "minimum": 0,
             "type": "integer"
@@ -2641,6 +2655,9 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "app_name": {
+            "type": "string"
+          },
           "on_screen_only": {
             "type": "boolean"
           },

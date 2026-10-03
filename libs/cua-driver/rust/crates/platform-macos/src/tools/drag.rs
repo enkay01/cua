@@ -245,29 +245,22 @@ impl Tool for DragTool {
             }
         };
 
-        // from_zoom: translate from last zoom crop context.
-        if from_zoom {
+        let (from_x, from_y, to_x, to_y) = if from_zoom {
             match super::zoom_context(&self.state, &args, pid, window_id) {
                 Ok(ctx) => {
                     let (wx, wy) = ctx.zoom_to_window(from_x, from_y);
                     let (wx2, wy2) = ctx.zoom_to_window(to_x, to_y);
-                    from_x = wx;
-                    from_y = wy;
-                    to_x = wx2;
-                    to_y = wy2;
+                    (wx, wy, wx2, wy2)
                 }
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match super::screenshot_scale(&self.state, &args, pid, window_id) {
-                Ok(ratio) => ratio,
-                Err(refusal) => return refusal,
-            };
-            from_x *= ratio;
-            from_y *= ratio;
-            to_x *= ratio;
-            to_y *= ratio;
-        }
+            let (fx, fy) =
+                super::screenshot_point(&self.state, &args, pid, window_id, from_x, from_y)?;
+            let (tx, ty) =
+                super::screenshot_point(&self.state, &args, pid, window_id, to_x, to_y)?;
+            (fx as f64, fy as f64, tx as f64, ty as f64)
+        };
 
         // Translate window-local screenshot pixels → screen coordinates, and
         // window-local logical coords for CGEventSetWindowLocation. Both ends of
