@@ -618,6 +618,7 @@ fn with_confirmed_foreground<T>(
         );
     };
 
+    let mut attachment: Option<InputQueueAttachment> = None;
     let result = (|| {
         focus()?;
         let deadline = Instant::now() + Duration::from_millis(250);
@@ -646,14 +647,22 @@ fn with_confirmed_foreground<T>(
                 actual.0
             );
         }
+        // Attach before inserting anything: attaching resets the shared key
+        // state, which must not race with modifiers the body is about to send.
+        attachment = InputQueueAttachment::attach(actual);
         body()
     })();
 
     // Keep the target foreground until its thread has read every inserted
     // event; restoring earlier hands the unread tail to another window (#4477).
-    if result.is_ok() {
-        wait_for_target_input_drained(target, Duration::from_secs(5));
+    match (&result, attachment.as_ref()) {
+        (Ok(_), Some(attachment)) => {
+            attachment.wait_for_drain(Duration::from_secs(2));
+        }
+        (Ok(_), None) => sleep(Duration::from_millis(40)),
+        _ => {}
     }
+    drop(attachment);
     if !previous.0.is_null() && previous != target {
         let _ = unsafe { SetForegroundWindow(previous) };
     }
@@ -665,50 +674,66 @@ fn with_confirmed_foreground<T>(
 /// produces no character.
 const DRAIN_SENTINEL_VK: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 
-/// Block until the target's GUI thread has retrieved all input inserted so
-/// far, bounded by `timeout`. A sentinel key press is appended to the system
-/// input queue behind the caller's events; while attached to the target's
-/// input queue, `GetKeyState` reflects the queue's synchronous key state, whose
-/// toggle bit flips only when the target thread reads the sentinel key-down.
-/// Returns false (after the timeout, or immediately when attaching fails)
-/// without sending anything else.
-fn wait_for_target_input_drained(target: HWND, timeout: Duration) -> bool {
-    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+/// The caller's thread attached to the foreground thread's input queue for
+/// the duration of one foreground input transaction; detaches on drop.
+struct InputQueueAttachment {
+    own_thread: u32,
+    target_thread: u32,
+}
 
-    let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
-    let own_thread = unsafe { GetCurrentThreadId() };
-    if target_thread == 0 || target_thread == own_thread {
-        sleep(Duration::from_millis(40));
-        return false;
+impl InputQueueAttachment {
+    fn attach(foreground: HWND) -> Option<Self> {
+        use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        let target_thread = unsafe { GetWindowThreadProcessId(foreground, None) };
+        let own_thread = unsafe { GetCurrentThreadId() };
+        if target_thread == 0 || target_thread == own_thread {
+            return None;
+        }
+        unsafe { AttachThreadInput(own_thread, target_thread, true) }
+            .as_bool()
+            .then_some(Self {
+                own_thread,
+                target_thread,
+            })
     }
-    if !unsafe { AttachThreadInput(own_thread, target_thread, true) }.as_bool() {
-        sleep(Duration::from_millis(40));
-        return false;
-    }
-    let toggled = || unsafe { GetKeyState(DRAIN_SENTINEL_VK.0 as i32) } & 1;
-    let before = toggled();
-    let sentinel = [sentinel_key_input(false), sentinel_key_input(true)];
-    let sent = unsafe { SendInput(&sentinel, std::mem::size_of::<INPUT>() as i32) };
-    let deadline = Instant::now() + timeout;
-    let drained = sent as usize == sentinel.len()
-        && loop {
+
+    /// Block until the foreground thread has retrieved all input inserted so
+    /// far, bounded by `timeout`. A sentinel key press is appended behind the
+    /// caller's events; while attached, `GetKeyState` reflects the shared
+    /// queue's synchronous key state, whose toggle bit flips only when the
+    /// target thread reads the sentinel key-down.
+    fn wait_for_drain(&self, timeout: Duration) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+        let toggled = || unsafe { GetKeyState(DRAIN_SENTINEL_VK.0 as i32) } & 1;
+        let before = toggled();
+        let sentinel = [sentinel_key_input(false), sentinel_key_input(true)];
+        let sent = unsafe { SendInput(&sentinel, std::mem::size_of::<INPUT>() as i32) };
+        if sent as usize != sentinel.len() {
+            sleep(Duration::from_millis(40));
+            return false;
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
             if toggled() != before {
-                break true;
+                return true;
             }
             if Instant::now() >= deadline {
-                break false;
+                tracing::warn!(
+                    "foreground input drain: target thread did not consume the sentinel within {} ms",
+                    timeout.as_millis()
+                );
+                return false;
             }
             sleep(Duration::from_millis(5));
-        };
-    let _ = unsafe { AttachThreadInput(own_thread, target_thread, false) };
-    if !drained {
-        tracing::warn!(
-            "foreground input drain: target thread did not consume the sentinel within {} ms",
-            timeout.as_millis()
-        );
+        }
     }
-    drained
+}
+
+impl Drop for InputQueueAttachment {
+    fn drop(&mut self) {
+        use windows::Win32::System::Threading::AttachThreadInput;
+        let _ = unsafe { AttachThreadInput(self.own_thread, self.target_thread, false) };
+    }
 }
 
 fn sentinel_key_input(up: bool) -> INPUT {
