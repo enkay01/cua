@@ -630,6 +630,15 @@ impl ToolState {
     }
 }
 
+macro_rules! unwrap_refusal {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(refusal) => return refusal,
+        }
+    };
+}
+
 fn screenshot_point(
     state: &ToolState,
     args: &Value,
@@ -951,7 +960,10 @@ impl Tool for ListWindowsTool {
             windows.retain(|w| w.is_on_screen);
         }
         if let Some(app_filter) = filter_app_name.as_deref() {
-            windows.retain(|w| cua_driver_core::app_name_matches(&w.app_name, app_filter));
+            windows.retain(|w| {
+                let app_name = pid_to_name.get(&w.pid).map(|s| s.as_str()).unwrap_or("");
+                cua_driver_core::app_name_matches(app_name, app_filter)
+            });
         }
 
         // Swift surfaces a warning when a pid filter matches nothing.
@@ -4066,7 +4078,7 @@ impl Tool for ClickTool {
                     Err(refusal) => return refusal,
                 }
             } else if !args.bool_or("_native_coordinates", false) {
-                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+                unwrap_refusal!(screenshot_point(&self.state, &args, pid, Some(hwnd), px, py))
             } else {
                 (px.round() as i32, py.round() as i32)
             };
@@ -6331,7 +6343,7 @@ impl Tool for ScrollTool {
             }
             let center = if let (Some(x), Some(y)) = (px, py) {
                 let (target_x, target_y) =
-                    screenshot_point(&self.state, &args, pid, Some(hwnd), x, y)?;
+                    unwrap_refusal!(screenshot_point(&self.state, &args, pid, Some(hwnd), x, y));
                 Some(bitmap_to_screen(hwnd, target_x, target_y))
             } else {
                 tokio::task::spawn_blocking({
@@ -6859,7 +6871,7 @@ impl Tool for DoubleClickTool {
                     Err(refusal) => return refusal,
                 }
             } else {
-                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+                unwrap_refusal!(screenshot_point(&self.state, &args, pid, Some(hwnd), px, py))
             };
             // bitmap pixels -> screen via DWM-frame origin (see
             // `bitmap_to_screen` doc for why ClientToScreen is wrong).
@@ -7204,7 +7216,7 @@ impl Tool for RightClickTool {
                     Err(refusal) => return refusal,
                 }
             } else {
-                screenshot_point(&self.state, &args, pid, Some(hwnd), px, py)?
+                unwrap_refusal!(screenshot_point(&self.state, &args, pid, Some(hwnd), px, py))
             };
             // bitmap pixels -> screen via DWM-frame origin (see
             // `bitmap_to_screen` doc).
@@ -7452,8 +7464,8 @@ impl Tool for DragTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            let (fx, fy) = screenshot_point(&self.state, &args, pid, hwnd_opt, from_x, from_y)?;
-            let (tx, ty) = screenshot_point(&self.state, &args, pid, hwnd_opt, to_x, to_y)?;
+            let (fx, fy) = unwrap_refusal!(screenshot_point(&self.state, &args, pid, hwnd_opt, from_x, from_y));
+            let (tx, ty) = unwrap_refusal!(screenshot_point(&self.state, &args, pid, hwnd_opt, to_x, to_y));
             (fx, fy, tx, ty)
         };
 
@@ -8832,8 +8844,8 @@ impl Tool for ZoomTool {
             Ok(context) => context,
             Err(refusal) => return refusal,
         };
-        let (nx1, ny1) = screenshot.geometry.to_native_f64(x1, y1)?;
-        let (nx2, ny2) = screenshot.geometry.to_native_f64(x2, y2)?;
+        let (nx1, ny1) = unwrap_refusal!(screenshot.geometry.to_native_f64(x1, y1));
+        let (nx2, ny2) = unwrap_refusal!(screenshot.geometry.to_native_f64(x2, y2));
 
         let state = self.state.clone();
         let result = tokio::task::spawn_blocking(move || {
