@@ -3230,8 +3230,8 @@ impl Tool for ClickTool {
                 the mouse button (Swift exposes right-click as a separate `right_click` \
                 tool). `action: \"expand\"` on an `element_token` opens the element \
                 through UIA ExpandCollapsePattern (the dropdown half of an MSAA split \
-                button); other actions use the default invoke. `debug_image_out` isn't \
-                supported yet.".into(),
+                button); other actions use the default invoke. `debug_image_out` writes \
+                a PNG with a red crosshair at (x, y) to verify coordinates before dispatch.".into(),
             input_schema: json!({
                 "type":"object","properties":{
                     "session": cua_driver_core::tool_schema::session_schema(),
@@ -3246,6 +3246,7 @@ impl Tool for ClickTool {
                     "count":{"type":"integer","minimum":1,"maximum":3,"description":"Click count — 1 (single), 2 (double), 3 (triple). Default 1."},
                     "modifier": cua_driver_core::tool_schema::modifier_schema(),
                     "from_zoom":{"type":"boolean","description":"When true, x and y are pixel coordinates in the last `zoom` image for this pid. The driver maps them back to window coords."},
+                    "debug_image_out":{"type":"string","description":"Optional file path. When set on a pixel-addressed click, captures a fresh screenshot, draws a red crosshair at (x, y), and writes the PNG. Use to verify coordinate spaces. Incompatible with from_zoom and capture_id."},
                     "scope":{"type":"string","enum":["window","desktop"],"default":"window","description":"Coordinate frame (default \"window\"). Pass \"desktop\" with x,y and no pid/window_id for a screen-absolute click in get_desktop_state coordinates."},
                     "delivery_mode": crate::input::delivery::delivery_mode_schema()
                 },"additionalProperties":false
@@ -3259,6 +3260,27 @@ impl Tool for ClickTool {
         use crate::uia::snapshot::SnapshotKind;
         use cua_driver_core::tool_args::ArgsExt;
         let cursor_key = resolve_cursor_key(&args);
+        let debug_image_out = args.opt_str("debug_image_out");
+        let from_zoom = args
+            .get("from_zoom")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let capture_id = args.get("capture_id").and_then(Value::as_str);
+
+        if capture_id.is_some() && (from_zoom || debug_image_out.is_some()) {
+            return ToolResult::error(
+                "click.capture_id is incompatible with from_zoom and debug_image_out; \
+                 pass coordinates from the exact source capture directly.",
+            )
+            .with_structured(json!({ "code": "invalid_arguments" }));
+        }
+
+        if debug_image_out.is_some() && from_zoom {
+            return ToolResult::error(
+                "debug_image_out is incompatible with from_zoom — \
+                 received (x, y) would be in zoom-crop space, not window-local.",
+            );
+        }
 
         // ── Window-less screen-absolute branch (desktop target) ───────────────
         // When the caller gives x,y with NO pid/window_id, treat x,y as TRUE
@@ -3341,6 +3363,39 @@ impl Tool for ClickTool {
                 }
             };
             let hwnd_u = root.0 as u64;
+
+            if let Some(ref dbg_path) = debug_image_out {
+                let dbg_path_c = dbg_path.clone();
+                let cx = input.x;
+                let cy = input.y;
+                let max_dim = args
+                    .get("max_image_dimension")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .filter(|cap| *cap > 0);
+                let dbg_result = tokio::task::spawn_blocking(move || {
+                    let raw_png = crate::capture::screenshot_display_bytes()?;
+                    let png = match max_dim {
+                        Some(dim) => crate::capture::resize_png_if_needed(&raw_png, dim)?,
+                        None => raw_png,
+                    };
+                    cua_driver_core::image_utils::write_crosshair_png(&png, cx, cy, &dbg_path_c)
+                })
+                .await;
+                match dbg_result {
+                    Err(e) => {
+                        return ToolResult::error(format!(
+                            "debug_image_out task failed: {e}. Not dispatching click."
+                        ))
+                    }
+                    Ok(Err(e)) => {
+                        return ToolResult::error(format!(
+                            "debug_image_out write failed: {e}. Not dispatching click."
+                        ))
+                    }
+                    Ok(Ok(())) => {}
+                }
+            }
 
             // Animate the agent cursor to the screen point, then click.
             overlay_glide_to(&cursor_key, sx as f64, sy as f64).await;
@@ -3462,6 +3517,12 @@ impl Tool for ClickTool {
                 }
             }
         };
+        if debug_image_out.is_some() && (elem_idx.is_some() || x.is_none() || y.is_none()) {
+            return ToolResult::error(
+                "debug_image_out applies to pixel-addressed clicks only (requires x and y without element_token).",
+            )
+            .with_structured(json!({ "code": "invalid_arguments" }));
+        }
         let capture_point = if args.get("capture_id").is_some() {
             if elem_idx.is_some()
                 || x.is_none()
@@ -4022,6 +4083,39 @@ impl Tool for ClickTool {
                 Err(error) => ToolResult::error(format!("Task error: {error}")),
             }
         } else if let (Some(mut px), Some(mut py)) = (x, y) {
+            if let Some(ref dbg_path) = debug_image_out {
+                let dbg_path_c = dbg_path.clone();
+                let max_dim = {
+                    let cfg = self.state.config.read().unwrap();
+                    cua_driver_core::image_utils::ImageDimensionLimits {
+                        configured: cfg.max_image_dimension,
+                        legacy_max_dimension: None,
+                        max_image_dimension: None,
+                    }
+                    .resolve()
+                };
+                let cx = px;
+                let cy = py;
+                let dbg_result = tokio::task::spawn_blocking(move || {
+                    let png = crate::capture::screenshot_window_bytes(hwnd)?;
+                    let png = crate::capture::resize_png_if_needed(&png, max_dim)?;
+                    cua_driver_core::image_utils::write_crosshair_png(&png, cx, cy, &dbg_path_c)
+                })
+                .await;
+                match dbg_result {
+                    Err(e) => {
+                        return ToolResult::error(format!(
+                            "debug_image_out task failed: {e}. Not dispatching click."
+                        ))
+                    }
+                    Ok(Err(e)) => {
+                        return ToolResult::error(format!(
+                            "debug_image_out write failed: {e}. Not dispatching click."
+                        ))
+                    }
+                    Ok(Ok(())) => {}
+                }
+            }
             let from_zoom = args
                 .get("from_zoom")
                 .and_then(|v| v.as_bool())

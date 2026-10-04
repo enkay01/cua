@@ -504,7 +504,7 @@ fn replay_trajectory() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[ignore = "sends real input to a live desktop window; run with --ignored only on a disposable desktop"]
 fn click_debug_image_out() {
     //! click with debug_image_out writes a PNG crosshair file and then proceeds.
