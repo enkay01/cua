@@ -1,0 +1,20 @@
+[project]
+name = "cua-driver-clef-use-example"
+version = "0.1.0"
+description = "Hierarchical visual grid localization with Cloudflare Clef and Cua Driver"
+requires-python = ">=3.10"
+dependencies = [
+  "pillow>=10.0.0",
+  "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = []
