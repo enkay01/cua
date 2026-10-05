@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Cua is a monorepo. GitHub issues and accepted RFCs are the durable records for
+  work selection, problem statements, and product or architecture decisions;
+  pull requests carry implementation. Follow CONTRIBUTING.md, MAINTAINERS.md,
+  rfcs/README.md, SECURITY.md, and AGENTS.md for their respective processes.
+  Use OpenSpec to plan and track a scoped implementation, not to replace those
+  records, select work, or bypass an RFC decision or security process.
+
+rules:
+  proposal:
+    - Link the GitHub issue and, when required, the accepted RFC. State the recorded decision and implementation scope.
+  specs:
+    - Describe the proposed behavior delta. Link canonical contracts instead of copying or replacing them.
+  design:
+    - Follow the component boundaries and architecture rules in Development.md and AGENTS.md.
+  tasks:
+    - Identify focused coverage and the applicable verification commands from TESTING.md.
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
