@@ -51,6 +51,7 @@ pub fn parent_liveness_stdin_enabled() -> bool {
 pub mod action_record;
 pub mod action_target;
 pub mod agent_cursor;
+pub mod app_name;
 pub mod authorization;
 pub mod background_input;
 pub mod browser;
@@ -103,6 +104,7 @@ pub mod snapshot_store;
 #[cfg(test)]
 pub(crate) mod snapshot_test_support;
 pub mod socket_io;
+pub mod screenshot_geometry;
 pub mod text_sanitize;
 pub mod timestamp;
 pub mod tool;
@@ -115,5 +117,7 @@ pub mod window_inspection;
 pub mod window_observation;
 pub mod window_target;
 
+pub use app_name::app_name_matches;
 pub use cua_driver_contract::{CaptureScope, EscalationReason, TOOL_INVOCATION_FAILED_CODE};
 pub use recording::RecordingSession;
+pub use screenshot_geometry::ScreenshotGeometry;

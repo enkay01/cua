@@ -2,6 +2,7 @@ use crate::element_token::{
     format_snapshot_id, parse_token, refusal, ResolvedElement, LRU_CAP_PER_PID, STALE_TOKEN_ERROR,
 };
 use crate::protocol::ToolResult;
+use crate::screenshot_geometry::ScreenshotGeometry;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -25,7 +26,7 @@ struct Snapshot<S> {
     id: u32,
     window_id: u64,
     screenshot_owner: Option<String>,
-    screenshot_scale: Option<f64>,
+    screenshot_geometry: Option<ScreenshotGeometry>,
     zoom: Option<ZoomContext>,
     semantic: bool,
     payload: S,
@@ -33,13 +34,13 @@ struct Snapshot<S> {
 
 impl<S> Snapshot<S> {
     fn screenshot(&self, session: Option<&str>) -> Option<ScreenshotContext> {
-        let scale = self
-            .screenshot_scale
+        let geometry = self
+            .screenshot_geometry
             .filter(|_| self.screenshot_owner.as_deref() == session)?;
         Some(ScreenshotContext {
             snapshot_id: self.id,
             window_id: self.window_id,
-            scale,
+            geometry,
         })
     }
 }
@@ -48,7 +49,14 @@ impl<S> Snapshot<S> {
 pub struct ScreenshotContext {
     pub snapshot_id: u32,
     pub window_id: u64,
-    pub scale: f64,
+    pub geometry: ScreenshotGeometry,
+}
+
+impl ScreenshotContext {
+    #[inline]
+    pub fn scale(&self) -> (f64, f64) {
+        self.geometry.scale()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,19 +148,17 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
     /// Publish the latest runtime-owned snapshot and its screenshot coordinate frame,
     /// returning its id and the ids of the snapshots it replaced or evicted.
     ///
-    /// `screenshot_scale` is the native-image-width / delivered-image-width ratio.
-    /// A `None` scale deliberately records that the latest observation did not
-    /// deliver an actionable screenshot. Publications completing after their
-    /// owning session ended are discarded instead of resurrecting retired state.
+    /// Publications completing after their owning session ended are discarded
+    /// instead of resurrecting retired state.
     pub fn publish_for_session(
         &self,
         pid: i32,
         window_id: u64,
         payload: S,
         session: Option<&str>,
-        screenshot_scale: Option<f64>,
+        screenshot_geometry: Option<ScreenshotGeometry>,
     ) -> Option<(u32, Vec<u32>)> {
-        self.publish_snapshot(pid, window_id, payload, session, screenshot_scale, true)
+        self.publish_snapshot(pid, window_id, payload, session, screenshot_geometry, true)
     }
 
     /// Publish screenshot/capture state without claiming that an accessibility
@@ -163,9 +169,9 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
         window_id: u64,
         payload: S,
         session: Option<&str>,
-        screenshot_scale: Option<f64>,
+        screenshot_geometry: Option<ScreenshotGeometry>,
     ) -> Option<(u32, Vec<u32>)> {
-        self.publish_snapshot(pid, window_id, payload, session, screenshot_scale, false)
+        self.publish_snapshot(pid, window_id, payload, session, screenshot_geometry, false)
     }
 
     fn publish_snapshot(
@@ -174,7 +180,7 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
         window_id: u64,
         payload: S,
         session: Option<&str>,
-        screenshot_scale: Option<f64>,
+        screenshot_geometry: Option<ScreenshotGeometry>,
         semantic: bool,
     ) -> Option<(u32, Vec<u32>)> {
         let (id, retired) = {
@@ -195,7 +201,7 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
                 id,
                 window_id,
                 screenshot_owner: session.map(str::to_owned),
-                screenshot_scale,
+                screenshot_geometry,
                 zoom: None,
                 semantic,
                 payload,
@@ -227,7 +233,7 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
                 let mut contexts = lane.iter().map(|snapshot| snapshot.screenshot(session));
                 contexts.next().flatten().filter(|first| {
                     contexts.all(|context| {
-                        context.is_some_and(|context| (context.scale - first.scale).abs() < 1e-9)
+                        context.is_some_and(|context| context.geometry == first.geometry)
                     })
                 })
             }
@@ -235,25 +241,62 @@ impl<S: SnapshotPayload> SnapshotStore<S> {
         context.ok_or_else(|| screenshot_context_refusal(Some(pid), window_id))
     }
 
-    /// The native-image / delivered-image scale for a window-relative pixel
-    /// action: 1.0 for a trusted in-process call whose pixels are already
-    /// native ([`NATIVE_WINDOW_PIXELS_ARG`]), otherwise the scale of the
-    /// session's current screenshot of the window (refused without one).
+    /// Map a screenshot coordinate into native window pixels.
+    ///
+    /// Validates bounds (`0.0 <= x <= width`, `0.0 <= y <= height`), scales each axis
+    /// independently, and rounds to the nearest integer pixel.
+    ///
+    /// If native coordinates are explicitly marked via [`NATIVE_WINDOW_PIXELS_ARG`]
+    /// or `_native_coordinates`, bounds checking is bypassed and coords are rounded.
+    pub fn screenshot_point(
+        &self,
+        pid: i32,
+        window_id: Option<u64>,
+        args: &serde_json::Value,
+        x: f64,
+        y: f64,
+    ) -> Result<(i32, i32), ToolResult> {
+        if args.get(NATIVE_WINDOW_PIXELS_ARG) == Some(&serde_json::Value::Bool(true))
+            || args.get("_native_coordinates") == Some(&serde_json::Value::Bool(true))
+        {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(ToolResult::error("Coordinates must be finite numbers."));
+            }
+            return Ok((x.round() as i32, y.round() as i32));
+        }
+        let session = args.get("_session_id").and_then(serde_json::Value::as_str);
+        let context = self.screenshot_context(pid, window_id, session)?;
+        context.geometry.to_native(x, y)
+    }
+
+    /// Resolve the ScreenshotGeometry of the window's current screenshot.
+    pub fn screenshot_geometry(
+        &self,
+        pid: i32,
+        window_id: Option<u64>,
+        args: &serde_json::Value,
+    ) -> Result<ScreenshotGeometry, ToolResult> {
+        let session = args.get("_session_id").and_then(serde_json::Value::as_str);
+        let context = self.screenshot_context(pid, window_id, session)?;
+        Ok(context.geometry)
+    }
+
+    /// The independent horizontal and vertical scale ratios `(scale_x, scale_y)`
+    /// for a window-relative pixel action: `(1.0, 1.0)` for trusted in-process
+    /// or native calls, otherwise the scale of the session's current screenshot.
     pub fn screenshot_scale(
         &self,
         pid: i32,
         window_id: Option<u64>,
         args: &serde_json::Value,
-    ) -> Result<f64, ToolResult> {
-        if args.get(NATIVE_WINDOW_PIXELS_ARG) == Some(&serde_json::Value::Bool(true)) {
-            return Ok(1.0);
+    ) -> Result<(f64, f64), ToolResult> {
+        if args.get(NATIVE_WINDOW_PIXELS_ARG) == Some(&serde_json::Value::Bool(true))
+            || args.get("_native_coordinates") == Some(&serde_json::Value::Bool(true))
+        {
+            return Ok((1.0, 1.0));
         }
-        self.screenshot_context(
-            pid,
-            window_id,
-            args.get("_session_id").and_then(serde_json::Value::as_str),
-        )
-        .map(|context| context.scale)
+        self.screenshot_geometry(pid, window_id, args)
+            .map(|g| g.scale())
     }
 
     pub fn screenshot_context_for_zoom(
@@ -577,7 +620,13 @@ mod tests {
         assert!(!cache.contains_semantic_window(9, 99));
 
         cache
-            .publish_capture_for_session(9, 99, Payload(vec![]), None, Some(1.0))
+            .publish_capture_for_session(
+                9,
+                99,
+                Payload(vec![]),
+                None,
+                ScreenshotGeometry::new(100, 100, 100, 100),
+            )
             .unwrap();
         assert!(cache.contains_window(9, 99));
         assert!(!cache.contains_semantic_window(9, 99));
@@ -683,11 +732,19 @@ mod tests {
             .to_owned()
     }
 
+    fn geom_scale(scale: f64) -> Option<ScreenshotGeometry> {
+        let w = 100;
+        let h = 100;
+        let nw = (w as f64 * scale).round() as u32;
+        let nh = (h as f64 * scale).round() as u32;
+        ScreenshotGeometry::new(w, h, nw, nh)
+    }
+
     fn scale(cache: &SnapshotStore<Payload>, window_id: u64, session: &str) -> Option<f64> {
         cache
             .screenshot_context(10, Some(window_id), Some(session))
             .ok()
-            .map(|context| context.scale)
+            .map(|context| context.geometry.scale().0)
     }
 
     fn zoom_on(snapshot: u32, scale: f64) -> ZoomContext {
@@ -695,7 +752,7 @@ mod tests {
             screenshot: ScreenshotContext {
                 snapshot_id: snapshot,
                 window_id: 20,
-                scale,
+                geometry: geom_scale(scale).unwrap(),
             },
             origin_x: 100.0,
             origin_y: 50.0,
@@ -706,10 +763,10 @@ mod tests {
     #[test]
     fn screenshot_coordinates_never_borrow_another_sessions_latest_transform() {
         let cache = SnapshotStore::new();
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(7.35));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(7.35));
         assert_eq!(scale(&cache, 20, "client-a"), Some(7.35));
 
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-b"), Some(1.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-b"), geom_scale(1.0));
         assert_eq!(scale(&cache, 20, "client-b"), Some(1.0));
         let refusal = cache
             .screenshot_context(10, Some(20), Some("client-a"))
@@ -732,16 +789,16 @@ mod tests {
             .expect_err("pixels without a read are refused");
         assert_eq!(refusal_code(refusal), "screenshot_context_missing");
         let native = session(serde_json::json!({ NATIVE_WINDOW_PIXELS_ARG: true }));
-        assert_eq!(cache.screenshot_scale(10, Some(20), &native).unwrap(), 1.0);
+        assert_eq!(cache.screenshot_scale(10, Some(20), &native).unwrap(), (1.0, 1.0));
 
         // Native pixels ignore the session's screenshot scale; other calls use it.
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(2.5));
-        assert_eq!(cache.screenshot_scale(10, Some(20), &native).unwrap(), 1.0);
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(2.5));
+        assert_eq!(cache.screenshot_scale(10, Some(20), &native).unwrap(), (1.0, 1.0));
         assert_eq!(
             cache
                 .screenshot_scale(10, Some(20), &session(serde_json::json!({})))
                 .unwrap(),
-            2.5
+            (2.5, 2.5)
         );
         // Only the boolean true marks native pixels.
         let refusal = cache
@@ -757,8 +814,8 @@ mod tests {
     #[test]
     fn screenshot_transforms_are_independent_across_windows() {
         let cache = SnapshotStore::new();
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(7.35));
-        cache.publish_for_session(10, 21, Payload(vec![]), Some("client-b"), Some(2.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(7.35));
+        cache.publish_for_session(10, 21, Payload(vec![]), Some("client-b"), geom_scale(2.0));
         assert_eq!(scale(&cache, 20, "client-a"), Some(7.35));
         assert_eq!(scale(&cache, 21, "client-b"), Some(2.0));
     }
@@ -766,8 +823,8 @@ mod tests {
     #[test]
     fn same_session_latest_snapshot_replaces_or_refuses_older_image_context() {
         let cache = SnapshotStore::new();
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(7.35));
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(1.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(7.35));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(1.0));
         assert_eq!(
             scale(&cache, 20, "client-a"),
             Some(1.0),
@@ -786,7 +843,7 @@ mod tests {
     fn window_relative_pixels_require_a_current_snapshot() {
         let cache = SnapshotStore::<Payload>::new();
         assert_eq!(scale(&cache, 20, "client-a"), None);
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(2.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(2.0));
         cache.remove(10, 20);
         assert_eq!(scale(&cache, 20, "client-a"), None);
     }
@@ -797,16 +854,16 @@ mod tests {
         assert!(cache
             .screenshot_context(10, None, Some("client-a"))
             .is_err());
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(2.0));
-        cache.publish_for_session(10, 21, Payload(vec![]), Some("client-a"), Some(2.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(2.0));
+        cache.publish_for_session(10, 21, Payload(vec![]), Some("client-a"), geom_scale(2.0));
         assert_eq!(
             cache
                 .screenshot_context(10, None, Some("client-a"))
                 .unwrap()
-                .scale,
-            2.0
+                .scale(),
+            (2.0, 2.0)
         );
-        cache.publish_for_session(10, 22, Payload(vec![]), Some("client-a"), Some(3.0));
+        cache.publish_for_session(10, 22, Payload(vec![]), Some("client-a"), geom_scale(3.0));
         assert!(cache
             .screenshot_context(10, None, Some("client-a"))
             .is_err());
@@ -835,8 +892,8 @@ mod tests {
     #[test]
     fn session_retirement_removes_only_snapshots_owned_by_that_session() {
         let cache = SnapshotStore::new();
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("ending"), Some(7.35));
-        cache.publish_for_session(10, 21, Payload(vec![]), Some("survivor"), Some(2.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("ending"), geom_scale(7.35));
+        cache.publish_for_session(10, 21, Payload(vec![]), Some("survivor"), geom_scale(2.0));
         assert_eq!(cache.retire_session_screenshots("ending"), 1);
         assert_eq!(scale(&cache, 20, "ending"), None);
         assert_eq!(scale(&cache, 21, "survivor"), Some(2.0));
@@ -869,7 +926,7 @@ mod tests {
 
         let guard = begin().expect("first unnamed call starts the session");
         let (snapshot, _) = cache
-            .publish_for_session(10, 20, Payload(vec![0, 1]), Some(&session), Some(1.0))
+            .publish_for_session(10, 20, Payload(vec![0, 1]), Some(&session), geom_scale(1.0))
             .expect("live session publishes");
         let token = token_for(snapshot, 1);
         drop(guard);
@@ -881,7 +938,7 @@ mod tests {
         let guard = begin().expect("next unnamed call recreates the session");
         assert!(resolve(&token).is_err());
         let (fresh, _) = cache
-            .publish_for_session(10, 20, Payload(vec![0, 1]), Some(&session), Some(1.0))
+            .publish_for_session(10, 20, Payload(vec![0, 1]), Some(&session), geom_scale(1.0))
             .expect("recreated session publishes again");
         assert!(matches!(
             resolve(&token_for(fresh, 1)).unwrap(),
@@ -902,7 +959,7 @@ mod tests {
         let session = format!("snapshot-late-capture-{}", uuid::Uuid::new_v4());
         assert!(crate::session::fire_session_end(&session));
         assert_eq!(
-            cache.publish_for_session(10, 20, Payload(vec![]), Some(&session), Some(7.35)),
+            cache.publish_for_session(10, 20, Payload(vec![]), Some(&session), geom_scale(7.35)),
             None
         );
         assert_eq!(scale(&cache, 20, &session), None);
@@ -912,7 +969,7 @@ mod tests {
     fn zoom_context_is_bound_to_snapshot_session_and_window() {
         let cache = SnapshotStore::new();
         let snapshot = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(7.35))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(7.35))
             .unwrap()
             .0;
         let context = zoom_on(snapshot, 7.35);
@@ -933,7 +990,7 @@ mod tests {
     fn window_only_screenshot_lookup_requires_one_current_owned_snapshot() {
         let cache = SnapshotStore::new();
         let first = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(2.0))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(2.0))
             .unwrap()
             .0;
         assert_eq!(
@@ -945,7 +1002,7 @@ mod tests {
                 ScreenshotContext {
                     snapshot_id: first,
                     window_id: 20,
-                    scale: 2.0,
+                    geometry: geom_scale(2.0).unwrap(),
                 }
             )
         );
@@ -960,7 +1017,7 @@ mod tests {
             .screenshot_context_for_zoom(None, 20, Some("client-b"))
             .is_err());
 
-        cache.publish_for_session(11, 20, Payload(vec![]), Some("client-a"), Some(1.0));
+        cache.publish_for_session(11, 20, Payload(vec![]), Some("client-a"), geom_scale(1.0));
         assert!(cache
             .screenshot_context_for_zoom(None, 20, Some("client-a"))
             .is_err());
@@ -970,11 +1027,11 @@ mod tests {
     fn late_zoom_completion_cannot_replace_newer_valid_context() {
         let cache = SnapshotStore::new();
         let snapshot_a = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(2.0))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(2.0))
             .unwrap()
             .0;
         let snapshot_b = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(1.0))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(1.0))
             .unwrap()
             .0;
         let valid_b = zoom_on(snapshot_b, 1.0);
@@ -989,20 +1046,20 @@ mod tests {
     fn newer_snapshot_or_session_end_retires_zoom() {
         let cache = SnapshotStore::new();
         let snapshot = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(7.35))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(7.35))
             .unwrap()
             .0;
         cache
             .set_zoom(10, Some("client-a"), zoom_on(snapshot, 7.35))
             .unwrap();
-        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-b"), Some(1.0));
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-b"), geom_scale(1.0));
         assert_eq!(
             refusal_code(cache.zoom(10, Some(20), Some("client-a")).unwrap_err()),
             "zoom_context_missing"
         );
 
         let latest = cache
-            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), Some(1.0))
+            .publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom_scale(1.0))
             .unwrap()
             .0;
         cache
@@ -1010,6 +1067,32 @@ mod tests {
             .unwrap();
         assert_eq!(cache.retire_session_screenshots("client-a"), 1);
         assert!(cache.zoom(10, Some(20), Some("client-a")).is_err());
+    }
+
+    #[test]
+    fn screenshot_point_bounds_check_and_independent_axis_scaling() {
+        let cache = SnapshotStore::new();
+        let geom = ScreenshotGeometry::new(800, 450, 1600, 900);
+        cache.publish_for_session(10, 20, Payload(vec![]), Some("client-a"), geom);
+        let session = serde_json::json!({ "_session_id": "client-a" });
+
+        // Valid coordinates
+        assert_eq!(
+            cache.screenshot_point(10, Some(20), &session, 10.0, 20.0).unwrap(),
+            (20, 40)
+        );
+        // Bounds checking
+        let oob = cache.screenshot_point(10, Some(20), &session, 801.0, 20.0).unwrap_err();
+        assert_eq!(
+            oob.structured_content.unwrap()["code"],
+            "screenshot_coordinate_out_of_bounds"
+        );
+        // Native coordinates bypass bounds checking and round
+        let native_args = serde_json::json!({ "_session_id": "client-a", "_native_coordinates": true });
+        assert_eq!(
+            cache.screenshot_point(10, Some(20), &native_args, 1000.4, 2000.6).unwrap(),
+            (1000, 2001)
+        );
     }
 
     struct DropCounter {
@@ -1049,7 +1132,7 @@ mod tests {
                 drops: drops.clone(),
             },
             Some("ending"),
-            Some(2.0),
+            geom_scale(2.0),
         );
         assert_eq!(cache.retire_session_screenshots("ending"), 1);
         assert_eq!(drops.load(Ordering::SeqCst), 1);

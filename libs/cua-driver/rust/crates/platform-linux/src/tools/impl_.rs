@@ -10,6 +10,7 @@ use cua_driver_core::{
     tool::{Tool, ToolDef, ToolRegistry},
     tool_args::{parse_legacy_click_input, parse_typed_input, parse_typed_projection, ArgsExt},
     window_target::{PidOnlyWindowTargetGuard, WindowTargetCandidate, WindowTargetCandidates},
+    ScreenshotGeometry,
 };
 use serde_json::{json, Value};
 use std::fs;
@@ -237,12 +238,26 @@ impl ToolState {
     }
 }
 
+fn screenshot_point(
+    state: &ToolState,
+    args: &Value,
+    pid: u32,
+    window_id: Option<u64>,
+    x: f64,
+    y: f64,
+) -> Result<(i32, i32), ToolResult> {
+    state
+        .snapshots
+        .screenshot_point(pid as i32, window_id, args, x, y)
+}
+
+#[allow(dead_code)]
 fn screenshot_scale(
     state: &ToolState,
     args: &Value,
     pid: u32,
     window_id: Option<u64>,
-) -> Result<f64, ToolResult> {
+) -> Result<(f64, f64), ToolResult> {
     state
         .snapshots
         .screenshot_scale(pid as i32, window_id, args)
@@ -542,6 +557,7 @@ impl Tool for ListWindowsTool {
                 relying on array order.".into(),
             input_schema: json!({"type":"object","properties":{
                 "pid":{"type":"integer","description":"Only list windows owned by this process ID."},
+                "app_name":{"type":"string","description":"Optional application name filter (case-insensitive, ignoring trailing .exe). When set, only windows from matching apps are returned."},
                 "on_screen_only":{"type":"boolean","description":"When true, filter to visible windows only. Default false."}
             },"additionalProperties":false}),
             read_only: true, destructive: false, idempotent: true, open_world: false,
@@ -551,6 +567,7 @@ impl Tool for ListWindowsTool {
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
         let filter_pid = args.opt_u64("pid").map(|v| v as u32);
+        let filter_app_name = args.opt_str("app_name");
         let on_screen_only = args.bool_or("on_screen_only", false);
         let mut windows =
             tokio::task::spawn_blocking(move || crate::wayland::list_windows_dispatch(filter_pid))
@@ -561,6 +578,9 @@ impl Tool for ListWindowsTool {
         windows.retain(|window| window.pid.is_none_or(crate::proc_fs::is_process_live));
         if on_screen_only {
             windows.retain(|window| window.is_on_screen);
+        }
+        if let Some(filter_app) = filter_app_name.as_deref() {
+            windows.retain(|window| cua_driver_core::app_name_matches(&window.app_name, filter_app));
         }
         if crate::wayland::is_wayland() {
             crate::wayland::remember_observed_window_origins(&windows);
@@ -1378,7 +1398,7 @@ impl Tool for GetWindowStateTool {
                                 (orig_w, orig_h),
                             )?)
                         };
-                        Some((b64, file_path, w, h, original_w, capture_id))
+                        Some((b64, file_path, w, h, orig_w, orig_h, capture_id))
                     }
                     Err(error) if crate::wayland::is_surface_identity_unproven(&error) => {
                         screenshot_error = Some(error.to_string());
@@ -1410,9 +1430,9 @@ impl Tool for GetWindowStateTool {
             Ok(Ok((tree_opt, shot_opt, bounds, screenshot_error, overlays))) => {
                 let mut content = Vec::new();
                 let mut structured = json!({ "window_id": xid, "pid": pid });
-                let screenshot_scale = shot_opt.as_ref().map(|(_, _, w, _, original_w, _)| {
-                    original_w.map_or(1.0, |ow| ow as f64 / *w as f64)
-                });
+                let screenshot_geometry = shot_opt
+                    .as_ref()
+                    .and_then(|(_, _, w, h, orig_w, orig_h, _)| ScreenshotGeometry::new(*w, *h, *orig_w, *orig_h));
                 let mut published_snapshot = false;
                 let mut invalidated = Vec::new();
 
@@ -1480,7 +1500,7 @@ impl Tool for GetWindowStateTool {
                                     pid, xid, &tr.nodes, &tr.bounds,
                                 ),
                                 session_id.as_deref(),
-                                screenshot_scale,
+                                screenshot_geometry,
                             )
                         })
                         .flatten()
@@ -1536,8 +1556,8 @@ impl Tool for GetWindowStateTool {
                     // Screenshot pixels: the capture is the window's own X11
                     // drawable (screen pixels), downsized by delivered/native.
                     let elements = match (local_origin, shot_opt.as_ref()) {
-                        (Some((ox, oy)), Some((_, _, w, _, orig_w, _))) => {
-                            let scale = orig_w.map_or(1.0, |ow| *w as f64 / ow as f64);
+                        (Some((ox, oy)), Some((_, _, w, h, orig_w, orig_h, _))) => {
+                            let scale = (f64::from(*w) / f64::from(*orig_w), f64::from(*h) / f64::from(*orig_h));
                             cua_driver_core::element_frame::with_screenshot_frames(
                                 elements,
                                 (f64::from(ox), f64::from(oy)),
@@ -1623,13 +1643,13 @@ impl Tool for GetWindowStateTool {
                     }
                 }
 
-                if !observation_only && !published_snapshot && screenshot_scale.is_some() {
+                if !observation_only && !published_snapshot && screenshot_geometry.is_some() {
                     if let Some((_, replaced)) = state.snapshots.publish_capture_for_session(
                         pid as i32,
                         xid,
                         crate::atspi::snapshot::AtspiSnapshot::from_nodes(&[]),
                         session_id.as_deref(),
-                        screenshot_scale,
+                        screenshot_geometry,
                     ) {
                         invalidated.extend(replaced);
                     }
@@ -1646,7 +1666,7 @@ impl Tool for GetWindowStateTool {
                     structured["invalidated_snapshot_ids"] = json!(ids);
                 }
 
-                if let Some((b64_opt, file_path, w, h, orig_w, capture_id)) = shot_opt {
+                if let Some((b64_opt, file_path, w, h, orig_w, orig_h, capture_id)) = shot_opt {
                     // ax mode + screenshot_out_file writes the PNG to disk and
                     // returns b64=None — never embed the image bytes in that case.
                     // Keep a text content part when the image went to disk so the
@@ -1662,11 +1682,13 @@ impl Tool for GetWindowStateTool {
                     structured["screenshot_width"] = json!(w);
                     structured["screenshot_height"] = json!(h);
                     structured["screenshot_frame_valid"] = json!(true);
-                    if let Some(ow) = orig_w {
-                        if ow > 0 {
-                            structured["frame_scale"] = json!(w as f64 / ow as f64);
-                            structured["screenshot_original_width"] = json!(ow);
-                        }
+                    if orig_w > 0 {
+                        structured["frame_scale"] = json!(w as f64 / orig_w as f64);
+                        structured["screenshot_original_width"] = json!(orig_w);
+                        structured["native_width"] = json!(orig_w);
+                    }
+                    if orig_h > 0 {
+                        structured["native_height"] = json!(orig_h);
                     }
                     // Surface 7: mirror the MCP image part's `mimeType` onto
                     // the structured payload so consumers don't have to sniff
@@ -1909,7 +1931,9 @@ impl Tool for LaunchAppTool {
                 matched against installed .desktop applications, then handed to xdg-open if it \
                 is a URL or existing file path), bundle_id (ignored on Linux), or urls (list of \
                 URLs to open). Resolution precedence: launch_path > name > bundle_id. Errors \
-                when the name resolves to nothing launchable.".into(),
+                when the name resolves to nothing launchable. Note: if the launch returns an \
+                empty windows array, callers should fall back to list_windows(app_name=...) \
+                to locate the window once initialized.".into(),
             input_schema: json!({"type":"object","properties":{
                 "launch_path":{"type":"string","description":"Round-trip the `launch_path` returned by `list_apps` — the Exec= command from the .desktop file with XDG field codes already stripped. Highest precedence on Linux; spawned directly via the system shell."},
                 "name":{"type":"string","description":"App name or command to launch. Tried as a direct command first, then matched against installed .desktop applications (exact display name, desktop-file id, or Exec basename; else an unambiguous display-name substring)."},
@@ -3331,23 +3355,25 @@ fn unavailable_wayland_focused_input_background(
 #[derive(Debug)]
 enum CoordinateContext {
     Zoom(ZoomContext),
+    Point(i32, i32),
+    #[allow(dead_code)]
     Screenshot(f64),
 }
 
-fn coordinate_click_context(
+fn coordinate_click_context<T>(
     native_refusal: Option<ToolResult>,
-    resolve_context: impl FnOnce() -> Result<CoordinateContext, ToolResult>,
-) -> Result<CoordinateContext, ToolResult> {
+    resolve_context: impl FnOnce() -> Result<T, ToolResult>,
+) -> Result<T, ToolResult> {
     if let Some(refusal) = native_refusal {
         return Err(refusal);
     }
     resolve_context()
 }
 
-fn coordinate_drag_context(
+fn coordinate_drag_context<T>(
     native_refusal: Option<ToolResult>,
-    resolve_context: impl FnOnce() -> Result<CoordinateContext, ToolResult>,
-) -> Result<CoordinateContext, ToolResult> {
+    resolve_context: impl FnOnce() -> Result<T, ToolResult>,
+) -> Result<T, ToolResult> {
     if let Some(refusal) = native_refusal {
         return Err(refusal);
     }
@@ -3358,10 +3384,10 @@ fn coordinate_drag_context(
 /// background delivery must report `background_unavailable` before the
 /// screenshot frame is consulted, because native Wayland may legitimately
 /// withhold the screenshot (`surface_identity_unproven`) that the frame needs.
-fn coordinate_scroll_scale(
+fn coordinate_scroll_scale<T>(
     native_refusal: Option<ToolResult>,
-    resolve_scale: impl FnOnce() -> Result<f64, ToolResult>,
-) -> Result<f64, ToolResult> {
+    resolve_scale: impl FnOnce() -> Result<T, ToolResult>,
+) -> Result<T, ToolResult> {
     if let Some(refusal) = native_refusal {
         return Err(refusal);
     }
@@ -5216,17 +5242,15 @@ fn mouse_button_up_coordinates(
         return Ok((hold.x, hold.y));
     }
 
-    let mut x = args.opt_f64("x").unwrap_or(hold.x);
-    let mut y = args.opt_f64("y").unwrap_or(hold.y);
+    let x = args.opt_f64("x").unwrap_or(hold.x);
+    let y = args.opt_f64("y").unwrap_or(hold.y);
     if args.bool_or("from_zoom", false) {
         let context = state.zoom_context(args, hold.pid, Some(hold.xid))?;
         return Ok(context.zoom_to_window(x, y));
     }
 
-    let ratio = screenshot_scale(state, args, hold.pid, Some(hold.xid))?;
-    x *= ratio;
-    y *= ratio;
-    Ok((x, y))
+    let (nx, ny) = screenshot_point(state, args, hold.pid, Some(hold.xid), x, y)?;
+    Ok((f64::from(nx), f64::from(ny)))
 }
 
 fn clear_mouse_hold_after_release(state: &ToolState, cursor_id: &str) {
@@ -6728,8 +6752,8 @@ impl Tool for ClickTool {
                         .zoom_context(&args, pid, Some(xid))
                         .map(CoordinateContext::Zoom)
                 } else {
-                    screenshot_scale(&self.state, &args, pid, Some(xid))
-                        .map(CoordinateContext::Screenshot)
+                    screenshot_point(&self.state, &args, pid, Some(xid), x, y)
+                        .map(|(nx, ny)| CoordinateContext::Point(nx, ny))
                 }
             }) {
                 Ok(context) => context,
@@ -6739,7 +6763,11 @@ impl Tool for ClickTool {
                 CoordinateContext::Zoom(context) => {
                     (x, y) = context.zoom_to_window(x, y);
                 }
-                CoordinateContext::Screenshot(scale) => {
+                CoordinateContext::Point(nx, ny) => {
+                    x = f64::from(nx);
+                    y = f64::from(ny);
+                }
+                CoordinateContext::Custom(scale) | CoordinateContext::Screenshot(scale) => {
                     x *= scale;
                     y *= scale;
                 }
@@ -9395,13 +9423,13 @@ impl Tool for ScrollTool {
                 let native_refusal = (!isolated_background)
                     .then(|| unavailable_wayland_focused_input_background(delivery, true))
                     .flatten();
-                let ratio = match coordinate_scroll_scale(native_refusal, || {
-                    screenshot_scale(&self.state, &args, pid, Some(xid))
+                let point = match coordinate_scroll_scale(native_refusal, || {
+                    screenshot_point(&self.state, &args, pid, Some(xid), x, y)
                 }) {
-                    Ok(ratio) => ratio,
+                    Ok(point) => point,
                     Err(refusal) => return refusal,
                 };
-                Some((x * ratio, y * ratio))
+                Some((f64::from(point.0), f64::from(point.1)))
             }
             (None, None) => None,
             (Some(_), None) => return invalid_pointer_arguments("scroll", "x was given without y"),
@@ -9935,12 +9963,12 @@ impl Tool for DoubleClickTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match screenshot_scale(&self.state, &args, pid, Some(xid)) {
-                Ok(ratio) => ratio,
+            let (nx, ny) = match screenshot_point(&self.state, &args, pid, Some(xid), x, y) {
+                Ok(point) => point,
                 Err(refusal) => return refusal,
             };
-            x *= ratio;
-            y *= ratio;
+            x = f64::from(nx);
+            y = f64::from(ny);
         }
         if desktop_frame {
             match tokio::task::spawn_blocking(move || desktop_to_window_local(xid, x, y)).await {
@@ -10214,12 +10242,12 @@ impl Tool for RightClickTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match screenshot_scale(&self.state, &args, pid, Some(xid)) {
-                Ok(ratio) => ratio,
+            let (nx, ny) = match screenshot_point(&self.state, &args, pid, Some(xid), x, y) {
+                Ok(point) => point,
                 Err(refusal) => return refusal,
             };
-            x *= ratio;
-            y *= ratio;
+            x = f64::from(nx);
+            y = f64::from(ny);
         }
         if desktop_frame {
             match tokio::task::spawn_blocking(move || desktop_to_window_local(xid, x, y)).await {
@@ -10483,22 +10511,6 @@ impl Tool for DragTool {
 
         let from_zoom = args.bool_or("from_zoom", false);
         let desktop_frame = desktop_frame_requested(&args);
-        let context = match coordinate_drag_context(native_refusal, || {
-            if desktop_frame {
-                // Desktop pixels: no zoom/screenshot scaling; translated below.
-                Ok(CoordinateContext::Screenshot(1.0))
-            } else if from_zoom {
-                self.state
-                    .zoom_context(&args, pid, Some(xid))
-                    .map(CoordinateContext::Zoom)
-            } else {
-                screenshot_scale(&self.state, &args, pid, Some(xid))
-                    .map(CoordinateContext::Screenshot)
-            }
-        }) {
-            Ok(context) => context,
-            Err(refusal) => return refusal,
-        };
 
         let coerce = |key: &str| -> Option<f64> {
             args.opt_f64(key)
@@ -10531,6 +10543,24 @@ impl Tool for DragTool {
             None => return ToolResult::error("Missing: to_y"),
         };
 
+        let context = match coordinate_drag_context(native_refusal, || {
+            if desktop_frame {
+                // Desktop pixels: no zoom/screenshot scaling; translated below.
+                Ok(CoordinateContext::Screenshot(1.0))
+            } else if from_zoom {
+                self.state
+                    .zoom_context(&args, pid, Some(xid))
+                    .map(CoordinateContext::Zoom)
+            } else {
+                let from = screenshot_point(&self.state, &args, pid, Some(xid), from_x, from_y)?;
+                let to = screenshot_point(&self.state, &args, pid, Some(xid), to_x, to_y)?;
+                Ok(CoordinateContext::Custom((from, to)))
+            }
+        }) {
+            Ok(context) => context,
+            Err(refusal) => return refusal,
+        };
+
         let duration_ms = args.u64_or("duration_ms", 500);
         let steps = args.u64_or("steps", 20) as usize;
         let button_str = args.str_or("button", "left");
@@ -10540,6 +10570,13 @@ impl Tool for DragTool {
                 (from_x, from_y) = context.zoom_to_window(from_x, from_y);
                 (to_x, to_y) = context.zoom_to_window(to_x, to_y);
             }
+            CoordinateContext::Custom(((fx, fy), (tx, ty))) => {
+                from_x = f64::from(fx);
+                from_y = f64::from(fy);
+                to_x = f64::from(tx);
+                to_y = f64::from(ty);
+            }
+            CoordinateContext::Point(..) => {}
             CoordinateContext::Screenshot(scale) => {
                 from_x *= scale;
                 from_y *= scale;
@@ -11122,12 +11159,12 @@ impl Tool for MouseButtonDownTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match screenshot_scale(&self.state, &args, pid, Some(xid)) {
-                Ok(ratio) => ratio,
+            let (nx, ny) = match screenshot_point(&self.state, &args, pid, Some(xid), x, y) {
+                Ok(point) => point,
                 Err(refusal) => return refusal,
             };
-            x *= ratio;
-            y *= ratio;
+            x = f64::from(nx);
+            y = f64::from(ny);
         }
         if desktop_frame {
             match tokio::task::spawn_blocking(move || desktop_to_window_local(xid, x, y)).await {
@@ -11291,12 +11328,12 @@ impl Tool for MouseDragTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            let ratio = match screenshot_scale(&self.state, &args, hold.pid, Some(hold.xid)) {
-                Ok(ratio) => ratio,
+            let (nx, ny) = match screenshot_point(&self.state, &args, hold.pid, Some(hold.xid), to_x, to_y) {
+                Ok(point) => point,
                 Err(refusal) => return refusal,
             };
-            to_x *= ratio;
-            to_y *= ratio;
+            to_x = f64::from(nx);
+            to_y = f64::from(ny);
         }
 
         let xid = hold.xid;
@@ -13083,12 +13120,14 @@ impl Tool for ZoomTool {
             return ToolResult::error("x2 must be > x1 and y2 must be > y1");
         }
 
-        let (x1, y1, x2, y2) = (
-            x1 * screenshot.scale,
-            y1 * screenshot.scale,
-            x2 * screenshot.scale,
-            y2 * screenshot.scale,
-        );
+        let (x1, y1) = match screenshot.geometry.to_native_f64(x1, y1) {
+            Ok(point) => point,
+            Err(refusal) => return refusal,
+        };
+        let (x2, y2) = match screenshot.geometry.to_native_f64(x2, y2) {
+            Ok(point) => point,
+            Err(refusal) => return refusal,
+        };
         let state = self.state.clone();
         let result = tokio::task::spawn_blocking(move || {
             // Route through the Wayland-aware window capture dispatcher so
@@ -13908,11 +13947,11 @@ pub fn build_registry_with_provider(
                             .zoom_context(args, pid, args.opt_u64("window_id"))
                             .ok()?
                             .zoom_to_window(x, y);
-                    } else if let Ok(ratio) =
-                        screenshot_scale(&state, args, pid, args.opt_u64("window_id"))
+                    } else if let Ok(point) =
+                        screenshot_point(&state, args, pid, args.opt_u64("window_id"), x, y)
                     {
-                        x *= ratio;
-                        y *= ratio;
+                        x = f64::from(point.0);
+                        y = f64::from(point.1);
                     }
                 }
                 crate::recording_hooks::hyprland_pixel_recording_point(window_id, pid, x, y)
