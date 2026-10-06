@@ -123,3 +123,21 @@ provider setup and credentials outside Driver, validates one returned ID, and
 dispatches the complete prebuilt action unchanged. See [Use jev-use with visual
 regions](https://cua.ai/docs/cua-driver/guides/visual-regions);
 do not add provider SDK logic or credentials to this skill.
+
+## Companion Clef grid localization over MCP
+
+When accessibility exposes no usable control and `cua-perception` parsing is
+unavailable or unsuitable (for example, the target is a small icon with no
+text), resolve the click point through the companion
+`clef-visual-localization` MCP server instead of estimating pixels by eye.
+Save the current observation with `screenshot_out_file`, call
+`locate_visual_target` with the saved image path and a short target
+description, then dispatch one Driver `click` with the returned `click_x`,
+`click_y`, target, and the matching `capture_id`. See
+`libs/cua-driver/examples/clef-use/README.md` for server setup and the agent
+MCP configuration snippet.
+
+A `success:false` result (low confidence, ambiguity, timeout, or unconfigured
+credentials) is a failed observation, not coordinates: reobserve and choose
+another route rather than acting from a guessed point. Capture expiry still
+applies: a new observation invalidates a previous localization.
