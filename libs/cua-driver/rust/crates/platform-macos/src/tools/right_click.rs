@@ -152,12 +152,14 @@ impl Tool for RightClickTool {
         }
 
         // ── Pixel path ───────────────────────────────────────────────────────
-        let (cx, cy) = (x.unwrap(), y.unwrap());
-        // Scale back from downscaled-image space to native pixels and validate bounds.
-        let (target_cx, target_cy) = {
-            let (nx, ny) = super::screenshot_point(&self.state, &args, pid, window_id, cx, cy)?;
-            (nx as f64, ny as f64)
+        let (mut cx, mut cy) = (x.unwrap(), y.unwrap());
+        // Scale back from downscaled-image space to native pixels when needed.
+        let ratio = match super::screenshot_scale(&self.state, &args, pid, window_id) {
+            Ok(ratio) => ratio,
+            Err(refusal) => return refusal,
         };
+        cx *= ratio;
+        cy *= ratio;
 
         // Window-local → screen coordinate translation + win-local logical coords
         // for CGEventSetWindowLocation (shared with click.rs via px_frame, which
@@ -165,7 +167,7 @@ impl Tool for RightClickTool {
         let (screen_x, screen_y, win_local_x, win_local_y) = if let Some(wid) = window_id {
             match super::px_frame::resolve_or_refuse(wid).await {
                 Ok(frame) => {
-                    let translated = frame.to_screen(target_cx, target_cy);
+                    let translated = frame.to_screen(cx, cy);
                     if !delivery_mode.is_foreground()
                         && (translated.2 < 0.0
                             || translated.3 < 0.0
@@ -183,7 +185,7 @@ impl Tool for RightClickTool {
                 Err(refusal) => return refusal,
             }
         } else {
-            (target_cx, target_cy, target_cx, target_cy)
+            (cx, cy, cx, cy)
         };
 
         let _mutation_lease = if !delivery_mode.is_foreground() {

@@ -18,18 +18,14 @@ use serde_json::{json, Value};
 /// `scale` the number of delivered screenshot pixels per screen unit
 /// (`< 1.0` when the capture was downsized, `2.0` for a full-size Retina
 /// capture of a point-based frame).
-pub fn with_screenshot_frames(
-    elements: Vec<Value>,
-    origin: (f64, f64),
-    (scale_x, scale_y): (f64, f64),
-) -> Vec<Value> {
-    if !(scale_x.is_finite() && scale_x > 0.0 && scale_y.is_finite() && scale_y > 0.0) {
+pub fn with_screenshot_frames(elements: Vec<Value>, origin: (f64, f64), scale: f64) -> Vec<Value> {
+    if !(scale.is_finite() && scale > 0.0) {
         return elements;
     }
     elements
         .into_iter()
         .map(|mut entry| {
-            if let Some(frame) = screenshot_frame(&entry["frame"], origin, (scale_x, scale_y)) {
+            if let Some(frame) = screenshot_frame(&entry["frame"], origin, scale) {
                 entry["screenshot_frame"] = frame;
             }
             entry
@@ -37,20 +33,16 @@ pub fn with_screenshot_frames(
         .collect()
 }
 
-fn screenshot_frame(
-    frame: &Value,
-    (ox, oy): (f64, f64),
-    (scale_x, scale_y): (f64, f64),
-) -> Option<Value> {
+fn screenshot_frame(frame: &Value, (ox, oy): (f64, f64), scale: f64) -> Option<Value> {
     let x = frame.get("x")?.as_f64()?;
     let y = frame.get("y")?.as_f64()?;
     let w = frame.get("w")?.as_f64()?;
     let h = frame.get("h")?.as_f64()?;
     Some(json!({
-        "x": ((x - ox) * scale_x).round() as i64,
-        "y": ((y - oy) * scale_y).round() as i64,
-        "w": (w * scale_x).round() as i64,
-        "h": (h * scale_y).round() as i64,
+        "x": ((x - ox) * scale).round() as i64,
+        "y": ((y - oy) * scale).round() as i64,
+        "w": (w * scale).round() as i64,
+        "h": (h * scale).round() as i64,
     }))
 }
 
@@ -64,7 +56,7 @@ mod tests {
             json!({"element_index": 0, "frame": {"x": 144, "y": 150, "w": 100, "h": 40}}),
             json!({"element_index": 1}),
         ];
-        let out = with_screenshot_frames(elements, (44.0, 40.0), (0.5, 0.5));
+        let out = with_screenshot_frames(elements, (44.0, 40.0), 0.5);
         assert_eq!(
             out[0]["screenshot_frame"],
             json!({"x": 50, "y": 55, "w": 50, "h": 20})
@@ -77,7 +69,7 @@ mod tests {
     #[test]
     fn point_frames_scale_to_retina_pixels() {
         let elements = vec![json!({"frame": {"x": 110.5, "y": 220.0, "w": 30.0, "h": 10.0}})];
-        let out = with_screenshot_frames(elements, (100.0, 200.0), (2.0, 2.0));
+        let out = with_screenshot_frames(elements, (100.0, 200.0), 2.0);
         assert_eq!(
             out[0]["screenshot_frame"],
             json!({"x": 21, "y": 40, "w": 60, "h": 20})
@@ -85,19 +77,9 @@ mod tests {
     }
 
     #[test]
-    fn scales_independently_per_axis() {
-        let elements = vec![json!({"frame": {"x": 100.0, "y": 100.0, "w": 50.0, "h": 40.0}})];
-        let out = with_screenshot_frames(elements, (50.0, 50.0), (2.0, 3.0));
-        assert_eq!(
-            out[0]["screenshot_frame"],
-            json!({"x": 100, "y": 150, "w": 100, "h": 120})
-        );
-    }
-
-    #[test]
     fn a_degenerate_scale_adds_nothing() {
         let elements = vec![json!({"frame": {"x": 1, "y": 2, "w": 3, "h": 4}})];
-        let out = with_screenshot_frames(elements, (0.0, 0.0), (0.0, 0.0));
+        let out = with_screenshot_frames(elements, (0.0, 0.0), 0.0);
         assert!(out[0].get("screenshot_frame").is_none());
     }
 }

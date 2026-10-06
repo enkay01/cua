@@ -48,9 +48,6 @@ pub struct ListWindowsInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "bool_schema")]
     pub on_screen_only: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub app_name: Option<String>,
 }
 
 impl ToolInput for ListWindowsInput {
@@ -311,10 +308,6 @@ pub struct WindowStateOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_height: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_scale: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_mime_type: Option<String>,
@@ -336,11 +329,6 @@ impl ToolOutput for WindowStateOutput {
             (None, None) => {}
             (Some(width), Some(height)) if width > 0 && height > 0 => {}
             _ => return Err("screenshot dimensions must be a positive width/height pair".into()),
-        }
-        match (self.native_width, self.native_height) {
-            (None, None) => {}
-            (Some(width), Some(height)) if width > 0 && height > 0 => {}
-            _ => return Err("native dimensions must be a positive width/height pair".into()),
         }
         if self
             .screenshot_scale

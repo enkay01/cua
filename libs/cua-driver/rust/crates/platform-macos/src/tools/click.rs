@@ -897,7 +897,7 @@ impl Tool for ClickTool {
                 }
             }
 
-            let (target_cx, target_cy) = if let Some(ref capture_id) = capture_id {
+            if let Some(ref capture_id) = capture_id {
                 let wid = match window_id {
                     Some(window_id) => window_id,
                     None => {
@@ -912,21 +912,30 @@ impl Tool for ClickTool {
                     .capture_bindings
                     .admit_window_click(capture_id, &args, pid, wid, cx, cy)
                 {
-                    Ok((action_x, action_y)) => (action_x, action_y),
+                    Ok((action_x, action_y)) => {
+                        cx = action_x;
+                        cy = action_y;
+                    }
                     Err(refusal) => return refusal,
                 }
             } else if from_zoom {
                 match super::zoom_context(&self.state, &args, pid, window_id) {
                     Ok(ctx) => {
                         let (wx, wy) = ctx.zoom_to_window(cx, cy);
-                        (wx, wy)
+                        cx = wx;
+                        cy = wy;
                     }
                     Err(refusal) => return refusal,
                 }
             } else {
-                let (nx, ny) = super::screenshot_point(&self.state, &args, pid, window_id, cx, cy)?;
-                (nx as f64, ny as f64)
-            };
+                let ratio = match super::screenshot_scale(&self.state, &args, pid, window_id) {
+                    Ok(ratio) => ratio,
+                    Err(refusal) => return refusal,
+                };
+                // Coordinates are in the downscaled image space; scale back to native pixels.
+                cx *= ratio;
+                cy *= ratio;
+            }
 
             // ── Window-local → screen coordinate translation ──────────────────
             // `click_at_xy` accepts screen-space coordinates (top-left origin).
@@ -942,7 +951,7 @@ impl Tool for ClickTool {
             let (screen_x, screen_y, win_local_x, win_local_y) = if let Some(wid) = window_id {
                 match super::px_frame::resolve_or_refuse(wid).await {
                     Ok(frame) => {
-                        let (sx, sy, lx, ly) = frame.to_screen(target_cx, target_cy);
+                        let (sx, sy, lx, ly) = frame.to_screen(cx, cy);
                         // A window-local point outside the live frame would
                         // dispatch onto whatever occupies that screen point —
                         // the same wrong-surface misclick class as #2237.
@@ -968,7 +977,7 @@ impl Tool for ClickTool {
                 }
             } else {
                 // No window_id → treat x,y as screen coordinates (legacy behaviour).
-                (target_cx, target_cy, target_cx, target_cy)
+                (cx, cy, cx, cy)
             };
 
             // ── Exact-target background gate (macOS background input v1) ──

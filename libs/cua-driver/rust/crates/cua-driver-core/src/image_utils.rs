@@ -83,17 +83,6 @@ impl ImageDimensionLimits {
     }
 }
 
-/// Compute downscaled image dimensions preserving aspect ratio with Lanczos3-compatible rounding.
-pub fn downscaled_dimensions(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
-    if max_dim == 0 || (w <= max_dim && h <= max_dim) {
-        return (w, h);
-    }
-    let scale = (max_dim as f64) / (w.max(h) as f64);
-    let new_w = (w as f64 * scale).round() as u32;
-    let new_h = (h as f64 * scale).round() as u32;
-    (new_w.max(1), new_h.max(1))
-}
-
 /// Downscale `png_bytes` so neither dimension exceeds `max_dim`.
 ///
 /// `max_dim == 0` is treated as "no cap"; the original bytes are
@@ -107,7 +96,9 @@ pub fn resize_png_if_needed(png_bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
     if w <= max_dim && h <= max_dim {
         return Ok(png_bytes.to_vec());
     }
-    let (new_w, new_h) = downscaled_dimensions(w, h, max_dim);
+    let scale = (max_dim as f64) / (w.max(h) as f64);
+    let new_w = (w as f64 * scale).round() as u32;
+    let new_h = (h as f64 * scale).round() as u32;
 
     let cursor = std::io::Cursor::new(png_bytes);
     let decoder = image::codecs::png::PngDecoder::new(cursor)?;
@@ -125,7 +116,7 @@ pub fn resize_png_if_needed(png_bytes: &[u8], max_dim: u32) -> Result<Vec<u8>> {
         _ => bail!("unsupported color type for resize: {color:?}"),
     };
 
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
     let mut out = Vec::new();
     resized.write_to(&mut std::io::Cursor::new(&mut out), ImageFormat::Png)?;
     Ok(out)
