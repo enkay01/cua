@@ -31,10 +31,6 @@ fn def() -> &'static ToolDef {
                     "type": "integer",
                     "description": "Optional pid filter. When set, only this pid's windows are returned."
                 },
-                "app_name": {
-                    "type": "string",
-                    "description": "Optional application name filter (case-insensitive, ignoring trailing .exe). When set, only windows from matching apps are returned."
-                },
                 "on_screen_only": {
                     "type": "boolean",
                     "description": "When true, drop windows not on the current Space. Default false."
@@ -58,7 +54,6 @@ impl Tool for ListWindowsTool {
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
         let pid_filter: Option<i32> = args.opt_i64("pid").map(|v| v as i32);
-        let app_name_filter = args.opt_str("app_name");
         let on_screen_only = args.bool_or("on_screen_only", false);
 
         let enumeration = if on_screen_only {
@@ -71,9 +66,6 @@ impl Tool for ListWindowsTool {
 
         if let Some(pid) = pid_filter {
             windows.retain(|w| w.pid == pid);
-        }
-        if let Some(filter_app) = app_name_filter.as_deref() {
-            windows.retain(|w| cua_driver_core::app_name_matches(&w.app_name, filter_app));
         }
 
         let windows_json: Vec<Value> = windows.iter().map(window_record_json).collect();

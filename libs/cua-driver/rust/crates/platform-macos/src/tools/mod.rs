@@ -682,26 +682,12 @@ impl ToolState {
     }
 }
 
-pub(super) fn screenshot_point(
-    state: &ToolState,
-    args: &serde_json::Value,
-    pid: i32,
-    window_id: Option<u32>,
-    x: f64,
-    y: f64,
-) -> Result<(i32, i32), cua_driver_core::protocol::ToolResult> {
-    state
-        .snapshots
-        .screenshot_point(pid, window_id.map(u64::from), args, x, y)
-}
-
-#[allow(dead_code)]
 pub(super) fn screenshot_scale(
     state: &ToolState,
     args: &serde_json::Value,
     pid: i32,
     window_id: Option<u32>,
-) -> Result<(f64, f64), cua_driver_core::protocol::ToolResult> {
+) -> Result<f64, cua_driver_core::protocol::ToolResult> {
     state
         .snapshots
         .screenshot_scale(pid, window_id.map(u64::from), args)
