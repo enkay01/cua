@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 from PIL import Image
 
@@ -32,6 +31,7 @@ def _unconfigured_credentials_error() -> dict:
         "click_y": None,
         "confidence": None,
         "winning_cell": None,
+        "mock": False,
         "capture_id": None,
         "pid": None,
         "window_id": None,
@@ -68,13 +68,19 @@ def locate_visual_target(
         min_confidence: Confidence floor below which localization abstains.
         ambiguity_margin: Margin below which non-adjacent competitors abstain.
         deadline_seconds: Total inference deadline in seconds.
-        mock_fixture_paths: Optional fixture JSON paths for offline verification.
+        mock_fixture_paths: Explicit fixture JSON paths for offline verification.
+            Blank entries are ignored. Results computed from fixtures carry
+            `"mock": true` so callers never mistake them for live inference.
 
     Returns:
         Structured dict with success, status, click_x, click_y, confidence,
-        winning_cell, capture_id, pid, window_id, and reason on failure.
+        winning_cell, mock provenance flag, capture_id, pid, window_id,
+        and reason on failure.
     """
     load_env_files()
+
+    fixtures = [p for p in (mock_fixture_paths or []) if p and str(p).strip()]
+    is_mock = bool(fixtures)
 
     if not image_path or not str(image_path).strip():
         return {
@@ -84,6 +90,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -98,6 +105,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -113,6 +121,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -130,17 +139,12 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
             "reason": f"Unable to load screenshot {image_path}: {exc}",
         }
-
-    fixtures = list(mock_fixture_paths) if mock_fixture_paths else None
-    if fixtures is None:
-        env_fixtures = os.environ.get("CLEF_MOCK_FIXTURES")
-        if env_fixtures:
-            fixtures = [p for p in env_fixtures.split(os.pathsep) if p.strip()]
 
     client_kwargs: dict = {}
     if model:
@@ -157,6 +161,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -185,6 +190,7 @@ def locate_visual_target(
             payload["capture_id"] = capture_id
             payload["pid"] = pid
             payload["window_id"] = window_id
+            payload["mock"] = is_mock
             return payload
         return {
             "success": False,
@@ -193,6 +199,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -206,6 +213,7 @@ def locate_visual_target(
             "click_y": None,
             "confidence": None,
             "winning_cell": None,
+            "mock": is_mock,
             "capture_id": capture_id,
             "pid": pid,
             "window_id": window_id,
@@ -221,6 +229,7 @@ def locate_visual_target(
             "click_y": result.click_y,
             "confidence": final.confidence if final else None,
             "winning_cell": final.winning_cell if final else None,
+            "mock": is_mock,
             "capture_id": result.capture_id,
             "pid": result.target_pid,
             "window_id": result.target_window_id,
@@ -236,6 +245,7 @@ def locate_visual_target(
         "click_y": None,
         "confidence": None,
         "winning_cell": None,
+        "mock": is_mock,
         "capture_id": result.capture_id,
         "pid": result.target_pid,
         "window_id": result.target_window_id,

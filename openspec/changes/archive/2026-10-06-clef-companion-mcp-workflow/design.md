@@ -4,9 +4,9 @@
 
 See [proposal.md](proposal.md) for motivation and [specs/visual-grid-localization/spec.md](specs/visual-grid-localization/spec.md) for requirements.
 
-The Python package in [libs/cua-driver/examples/clef-use](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use) already contains complete 5x5 subdivision, boundary clamping, and Workers AI integration in [grid_localizer.py](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use/python/grid_localizer.py). In addition, [pyproject.toml](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use/pyproject.toml) lists `mcp>=1.0.0` as a dependency.
+The Python package in [libs/cua-driver/examples/clef-use](../../../../libs/cua-driver/examples/clef-use) already contains complete 5x5 subdivision, boundary clamping, and Workers AI integration in [grid_localizer.py](../../../../libs/cua-driver/examples/clef-use/python/grid_localizer.py). In addition, [pyproject.toml](../../../../libs/cua-driver/examples/clef-use/pyproject.toml) lists `mcp>=1.0.0` as a dependency.
 
-The Cua Driver skill documentation lives in [libs/cua-driver/rust/Skills/cua-driver](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver) and is synced to client distributions.
+The Cua Driver skill documentation lives in [libs/cua-driver/rust/Skills/cua-driver](../../../../libs/cua-driver/rust/Skills/cua-driver) and is synced to client distributions.
 
 ## Goals / Non-Goals
 
@@ -14,7 +14,7 @@ The Cua Driver skill documentation lives in [libs/cua-driver/rust/Skills/cua-dri
 - Expose visual grid localization as an MCP tool named `locate_visual_target` using Python FastMCP.
 - Support credential loading from process environment variables and project `.env` files.
 - Return structured status, coordinates, confidence, and explicit abstention reasons.
-- Update Cua Driver skill files ([WORKFLOW.md](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver/WORKFLOW.md), [VISUAL.md](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver/VISUAL.md), [SKILL.md](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver/SKILL.md)) to guide agents toward `locate_visual_target` and prohibit manual pixel estimation.
+- Update Cua Driver skill files ([WORKFLOW.md](../../../../libs/cua-driver/rust/Skills/cua-driver/WORKFLOW.md), [VISUAL.md](../../../../libs/cua-driver/rust/Skills/cua-driver/VISUAL.md), [SKILL.md](../../../../libs/cua-driver/rust/Skills/cua-driver/SKILL.md)) to guide agents toward `locate_visual_target` and prohibit manual pixel estimation.
 
 **Non-Goals:**
 - Modify the Cua Driver Rust core, daemon protocol, or platform input adapters.
@@ -27,7 +27,7 @@ The Cua Driver skill documentation lives in [libs/cua-driver/rust/Skills/cua-dri
 
 The server will be implemented in `libs/cua-driver/examples/clef-use/python/server.py` using `mcp.server.fastmcp.FastMCP`.
 
-Rationale: FastMCP provides clean decorator-based tool definitions and handles stdio transport without boilerplate. It directly imports [`ClefGridLocalizer`](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use/python/grid_localizer.py#L93) and [`ClefClient`](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use/python/clef_adapter.py#L32), reusing existing tested code without duplicating logic.
+Rationale: FastMCP provides clean decorator-based tool definitions and handles stdio transport without boilerplate. It directly imports [`ClefGridLocalizer`](../../../../libs/cua-driver/examples/clef-use/python/grid_localizer.py#L93) and [`ClefClient`](../../../../libs/cua-driver/examples/clef-use/python/clef_adapter.py#L32), reusing existing tested code without duplicating logic.
 
 Alternatives considered:
 - TypeScript MCP server: Feasible via `@modelcontextprotocol/sdk`, but Python already has `mcp` in `pyproject.toml` and existing test infrastructure.
@@ -44,7 +44,7 @@ Alternatives considered:
 
 ### Return complete structured localization results
 
-The tool returns a dictionary matching [LocalizationResult](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/examples/clef-use/python/grid_localizer.py#L54):
+The tool returns a dictionary matching [LocalizationResult](../../../../libs/cua-driver/examples/clef-use/python/grid_localizer.py#L54):
 - On success: `success=True`, `status="success"`, `click_x`, `click_y`, `confidence`, `winning_cell`, and any passed `capture_id`, `pid`, `window_id`.
 - On abstention: `success=False`, `status` (`abstained_low_confidence`, `abstained_ambiguous`, `abstained_timeout`), `reason`, and null coordinates.
 
@@ -52,7 +52,7 @@ Rationale: Explicit failure contracts prevent agents from guessing coordinates w
 
 ### Direct agents away from manual pixel estimation in skill documentation
 
-Update [WORKFLOW.md](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver/WORKFLOW.md) and [VISUAL.md](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver/VISUAL.md) in [libs/cua-driver/rust/Skills/cua-driver](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver). Instruct agents that when accessibility controls are absent, they must write `screenshot_out_file` and call `locate_visual_target` rather than eyeballing coordinates.
+Update [WORKFLOW.md](../../../../libs/cua-driver/rust/Skills/cua-driver/WORKFLOW.md) and [VISUAL.md](../../../../libs/cua-driver/rust/Skills/cua-driver/VISUAL.md) in [libs/cua-driver/rust/Skills/cua-driver](../../../../libs/cua-driver/rust/Skills/cua-driver). Instruct agents that when accessibility controls are absent, they must write `screenshot_out_file` and call `locate_visual_target` rather than eyeballing coordinates.
 
 Rationale: Session f8149b59 demonstrated that without explicit instruction in the skill, agents default to inspecting raw PNG previews and hallucinating coordinates.
 

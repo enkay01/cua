@@ -39,6 +39,7 @@ def test_successful_fixture_localization(tmp_path: Path) -> None:
     assert 0 <= result["click_y"] <= 50
     assert result["confidence"] is not None and result["confidence"] > 0.70
     assert result["winning_cell"] == "E1"
+    assert result["mock"] is True
     assert result["capture_id"] == "cap-123"
     assert result["pid"] == 42
     assert result["window_id"] == 1
@@ -58,24 +59,36 @@ def test_unconfigured_credentials_refusal(tmp_path: Path, monkeypatch) -> None:
     assert result["status"] == "unconfigured_credentials"
     assert result["click_x"] is None
     assert result["click_y"] is None
+    assert result["mock"] is False
     assert "CLOUDFLARE_API_TOKEN" in (result["reason"] or "")
 
 
 def test_invalid_image_file_path(tmp_path: Path) -> None:
     missing = str(tmp_path / "does-not-exist.png")
-    result = locate_visual_target(
-        missing,
-        "Terminal close button",
-        capture_id="cap-xyz",
-        mock_fixture_paths=GOLDEN_FIXTURES,
-    )
+    result = locate_visual_target(missing, "Terminal close button", capture_id="cap-xyz")
 
     assert result["success"] is False
     assert result["status"] == "invalid_image"
     assert result["click_x"] is None
     assert result["click_y"] is None
+    assert result["mock"] is False
     assert "not found" in (result["reason"] or "")
     assert result["capture_id"] == "cap-xyz"
+
+
+def test_blank_fixture_paths_fall_through_to_credential_guard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    image_path = _write_image(tmp_path / "screenshot.png", size=(800, 600))
+    result = locate_visual_target(image_path, "Terminal close button", mock_fixture_paths=["", "  "])
+
+    assert result["success"] is False
+    assert result["status"] == "unconfigured_credentials"
+    assert result["mock"] is False
 
 
 def test_abstention_reporting(tmp_path: Path) -> None:
@@ -107,4 +120,5 @@ def test_abstention_reporting(tmp_path: Path) -> None:
     assert result["status"] == "abstained_low_confidence"
     assert result["click_x"] is None
     assert result["click_y"] is None
+    assert result["mock"] is True
     assert "below floor" in (result["reason"] or "")

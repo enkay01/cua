@@ -18,7 +18,7 @@ The system SHALL expose visual grid localization as a Model Context Protocol too
 - **THEN** the tool returns an explicit error indicating unconfigured credentials before attempting inference
 
 ### Requirement: Visual targeting skill guidance
-The Cua Driver skill documentation in [Skills/cua-driver](file:///Users/iannkwocha/Documents/GitHub/cua/libs/cua-driver/rust/Skills/cua-driver) SHALL instruct agents to obtain target coordinates via `locate_visual_target` on saved screenshots when semantic controls are absent, explicitly prohibiting manual coordinate estimation from raw images.
+The Cua Driver skill documentation in [Skills/cua-driver](../../../../../../libs/cua-driver/rust/Skills/cua-driver) SHALL instruct agents to obtain target coordinates via `locate_visual_target` on saved screenshots when semantic controls are absent, explicitly prohibiting manual coordinate estimation from raw images.
 
 #### Scenario: Semantic element missing from accessibility tree
 - **WHEN** an agent operating Cua Driver needs to interact with an element not represented in `get_window_state`

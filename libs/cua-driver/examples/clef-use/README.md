@@ -171,7 +171,7 @@ Register the companion alongside Cua Driver in the agent's MCP configuration (pa
 3. On `success: true`, dispatch one Driver `click` with the returned `click_x`, `click_y`, target, and the same `capture_id`; then reobserve from fresh state.
 4. On `success: false`, do not act: `abstained_low_confidence`, `abstained_ambiguous`, and `abstained_timeout` mean the target could not be resolved, `unconfigured_credentials` means the server lacks Cloudflare credentials, and `invalid_image` means the screenshot path was wrong.
 
-For offline verification without credentials, pass `mock_fixture_paths` pointing at the checked-in `fixtures/clef-localization-level*.json` files, or set the `CLEF_MOCK_FIXTURES` environment variable to a path-separated fixture list.
+For offline verification without credentials, pass `mock_fixture_paths` pointing at the checked-in `fixtures/clef-localization-level*.json` files. `mock_fixture_paths` is an explicit verification seam: results computed from fixtures carry `"mock": true` (live inference carries `"mock": false`), so callers can tell fixture replay apart from real localization. Blank entries are ignored, and with no usable fixtures the tool falls through to the normal credential guard.
 
 ## Running tests
 
