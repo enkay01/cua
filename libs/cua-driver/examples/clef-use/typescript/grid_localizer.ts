@@ -247,7 +247,7 @@ export function createLocalizationResult(init: Omit<LocalizationResult, 'matches
     ...init,
     matchesObservation(obs) {
       if (!init.success) return false;
-      if (init.captureId !== undefined && obs.captureId !== undefined && obs.captureId !== init.captureId) {
+      if (init.captureId !== undefined && obs.captureId !== init.captureId) {
         return false;
       }
       if (init.targetPid !== undefined && obs.pid !== undefined && obs.pid !== init.targetPid) {
@@ -357,8 +357,17 @@ export class ClefGridLocalizer {
       const cropBox = clampCropWindow(activeCenterX, activeCenterY, cropW, cropH, rootW, rootH);
       const overlay = renderGridOverlay({ width: cropW, height: cropH });
 
+      // Support passing an image (base64 string, Buffer, or data URI) with overlay fallback
+      const payloadImage =
+        'base64' in image && typeof (image as { base64?: unknown }).base64 === 'string'
+          ? (image as { base64: string }).base64
+          : 'dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string'
+          ? (image as { dataUri: string }).dataUri
+          : overlay.svg;
+
+      const remainingTimeMs = deadline !== Infinity ? Math.max(0, deadline - Date.now()) : undefined;
       const prompt = `Select the grid cell containing ${targetDescription}`;
-      const evalResult = await this.client.evaluateGrid(overlay.svg, prompt);
+      const evalResult = await this.client.evaluateGrid(payloadImage, prompt, undefined, remainingTimeMs);
 
       const [topCell, topConf] = evalResult.topCandidate;
       if (topConf < this.minConfidence) {

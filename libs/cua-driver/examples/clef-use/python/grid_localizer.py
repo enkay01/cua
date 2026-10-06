@@ -196,7 +196,8 @@ class ClefGridLocalizer:
 
             # Evaluate with Clef
             prompt = f"Select the grid cell containing {target_description}"
-            eval_result = self.client.evaluate_grid(grid_crop, prompt)
+            remaining_time = deadline - time.monotonic() if deadline != float("inf") else None
+            eval_result = self.client.evaluate_grid(grid_crop, prompt, timeout=remaining_time)
 
             # Check confidence floor
             top_cell, top_conf = eval_result.top_candidate

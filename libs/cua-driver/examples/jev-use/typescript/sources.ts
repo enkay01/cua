@@ -245,6 +245,10 @@ export class VisualGridSource implements CandidateSource {
     if (!this.localization || !this.localization.success) {
       return undefined;
     }
+    const locCaptureId = (this.localization as { captureId?: string }).captureId;
+    if (locCaptureId !== undefined && locCaptureId !== this.captureId) {
+      return undefined;
+    }
     const targetDesc = this.localization.targetDescription || '';
     if (asciiLower(targetDesc) !== asciiLower(name)) {
       return undefined;
@@ -261,6 +265,10 @@ export class VisualGridSource implements CandidateSource {
   click(control: Control, candidateId: string, description: string): Candidate | undefined {
     if (!this.captureBound) return undefined;
     if (!this.localization || !this.localization.success) return undefined;
+    const locCaptureId = (this.localization as { captureId?: string }).captureId;
+    if (locCaptureId !== undefined && locCaptureId !== this.captureId) {
+      return undefined;
+    }
     const { clickX, clickY } = this.localization;
     if (clickX === undefined || clickY === undefined) return undefined;
 

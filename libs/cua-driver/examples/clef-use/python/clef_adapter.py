@@ -211,6 +211,7 @@ class ClefClient:
         instructions: str,
         *,
         criteria: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> ClefChoiceResult:
         """Evaluate a 5x5 grid crop against a goal description."""
         # 1. Custom mock handler
@@ -244,8 +245,8 @@ class ClefClient:
         b64_image = image_to_base64_jpeg(image)
         payload = build_clef_request(b64_image, instructions, criteria=criteria, model=self.model)
 
-        timeout = float(os.environ.get("CLEF_TIMEOUT", 120.0))
-        with httpx.Client(timeout=timeout) as client:
+        effective_timeout = timeout if timeout is not None else float(os.environ.get("CLEF_TIMEOUT", 120.0))
+        with httpx.Client(timeout=effective_timeout) as client:
             resp = client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()

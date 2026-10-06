@@ -233,6 +233,9 @@ class VisualGridSource:
     def find(self, role: str, name: str) -> Control | None:
         if not self.localization or not getattr(self.localization, "success", False):
             return None
+        loc_capture_id = getattr(self.localization, "capture_id", None)
+        if loc_capture_id is not None and loc_capture_id != self.capture_id:
+            return None
         target_desc = getattr(self.localization, "target_description", "")
         if _ascii_lower(target_desc) != _ascii_lower(name):
             return None
@@ -242,6 +245,9 @@ class VisualGridSource:
         if not self.capture_bound:
             return None
         if not self.localization or not getattr(self.localization, "success", False):
+            return None
+        loc_capture_id = getattr(self.localization, "capture_id", None)
+        if loc_capture_id is not None and loc_capture_id != self.capture_id:
             return None
         x = getattr(self.localization, "click_x", None)
         y = getattr(self.localization, "click_y", None)

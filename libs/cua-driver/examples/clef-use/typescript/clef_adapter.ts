@@ -233,7 +233,8 @@ export class ClefClient {
   public async evaluateGrid(
     image: unknown,
     instructions: string,
-    criteria?: Record<string, string>
+    criteria?: Record<string, string>,
+    timeoutMs?: number
   ): Promise<ClefChoiceResult> {
     if (this.mockHandler) {
       return await this.mockHandler(image, instructions);
@@ -267,10 +268,15 @@ export class ClefClient {
     const b64 = typeof image === 'string' ? image : '';
     const payload = buildClefRequest(b64, instructions, criteria, this.model);
 
+    const effectiveTimeoutMs =
+      timeoutMs !== undefined ? timeoutMs : Number(process.env.CLEF_TIMEOUT || 120000);
+    const signal = effectiveTimeoutMs > 0 ? AbortSignal.timeout(effectiveTimeoutMs) : undefined;
+
     const resp = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
+      signal,
     });
 
     if (!resp.ok) {
