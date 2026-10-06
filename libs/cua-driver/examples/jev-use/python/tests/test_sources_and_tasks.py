@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import REDACTED_TOKEN, parse_visual_regions
-from sources import BrowserSemanticSource, CandidateSource, VisualRegionSource
+from sources import BrowserSemanticSource, CandidateSource, VisualGridSource, VisualRegionSource
 from tasks import (
     FIXTURE_GOAL,
     SUBMIT_IDS,
@@ -75,6 +75,45 @@ class CandidateSourceTest(unittest.TestCase):
             (candidate.arguments["x"], candidate.arguments["y"]),
             visual.screenshot_center(submit.handle),
         )
+
+    def test_visual_grid_source_clicks_capture_bound_and_never_types(self) -> None:
+        class MockLoc:
+            success = True
+            target_description = "Submit Button"
+            click_x = 120.0
+            click_y = 45.0
+
+        grid_source: CandidateSource = VisualGridSource(
+            localization=MockLoc(),
+            pid=123,
+            window_id=456,
+            capture_id="cap-xyz",
+            delivery="background",
+            capture_bound=False,
+        )
+        self.assertEqual(grid_source.kind, "visual")
+        submit = grid_source.find("button", "submit button")
+        self.assertIsNotNone(submit)
+        self.assertIsNone(grid_source.click(submit, candidate_id="c", description="d"))
+        self.assertIsNone(grid_source.type_text(submit, "x", candidate_id="c", description="d"))
+
+        bound = VisualGridSource(
+            localization=MockLoc(),
+            pid=123,
+            window_id=456,
+            capture_id="cap-xyz",
+            delivery="background",
+            capture_bound=True,
+        )
+        candidate = bound.click(submit, candidate_id="c", description="d")
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.tool, "click")
+        self.assertEqual(candidate.capture_id, "cap-xyz")
+        self.assertEqual(candidate.arguments["delivery_mode"], "background")
+        self.assertEqual(candidate.arguments["x"], 120.0)
+        self.assertEqual(candidate.arguments["y"], 45.0)
+        self.assertEqual(candidate.arguments["pid"], 123)
+        self.assertEqual(candidate.arguments["window_id"], 456)
 
 
 class FixtureTaskSpecTest(unittest.TestCase):
