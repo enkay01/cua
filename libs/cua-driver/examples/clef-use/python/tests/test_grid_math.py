@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from grid import (
+from grid_localizer import (
     ALL_CELLS,
     COLUMNS,
     ROWS,
@@ -125,14 +125,28 @@ def test_clamp_crop_window_top_right_and_bottom_left() -> None:
     assert bl.height == 300
 
 
-def test_clamp_crop_window_larger_than_image() -> None:
-    box = clamp_crop_window(center_x=100, center_y=100, crop_w=2000, crop_h=1500, image_w=1280, image_h=720)
-    assert box.left == 0
-    assert box.top == 0
-    assert box.right == 1280
-    assert box.bottom == 720
-    assert box.width == 1280
-    assert box.height == 720
+def test_clamp_crop_window_rejects_larger_than_image() -> None:
+    with pytest.raises(ValueError, match="exceeds image dimensions"):
+        clamp_crop_window(center_x=100, center_y=100, crop_w=2000, crop_h=500, image_w=1280, image_h=720)
+
+    with pytest.raises(ValueError, match="exceeds image dimensions"):
+        clamp_crop_window(center_x=100, center_y=100, crop_w=500, crop_h=1500, image_w=1280, image_h=720)
+
+
+def test_fractional_center_and_edge_fixtures() -> None:
+    # Fractional center coordinates (e.g. from cell midpoint calculation)
+    box = clamp_crop_window(center_x=387.5, center_y=241.5, crop_w=100, crop_h=80, image_w=500, image_h=400)
+    assert box.left == 338  # round(387.5 - 50.0) = 338
+    assert box.top == 202   # round(241.5 - 40.0) = 202
+    assert box.width == 100
+    assert box.height == 80
+
+    # Exact boundary edge alignment
+    box_edge = clamp_crop_window(center_x=50.0, center_y=40.0, crop_w=100, crop_h=80, image_w=500, image_h=400)
+    assert box_edge.left == 0
+    assert box_edge.top == 0
+    assert box_edge.right == 100
+    assert box_edge.bottom == 80
 
 
 def test_cell_geometry_and_partition() -> None:

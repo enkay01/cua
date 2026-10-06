@@ -1,0 +1,15 @@
+{
+  "name": "cua-driver-clef-use-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test typescript/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "demo:mock": "tsx typescript/localizer.ts --image fixtures/primeagen-grid-centering-reference.jpg --prompt 'Terminal close button' --crop-desktop"
+  },
+  "devDependencies": {
+    "@types/node": "22.17.0",
+    "tsx": "4.20.3",
+    "typescript": "5.9.2"
+  }
+}

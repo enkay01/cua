@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { REDACTED_TOKEN, parseVisualRegions, type VisualObservation } from './core.js';
-import { BrowserSemanticSource, VisualRegionSource, type CandidateSource } from './sources.js';
+import { BrowserSemanticSource, VisualGridSource, VisualRegionSource, type CandidateSource } from './sources.js';
 import {
   FIXTURE_GOAL,
   FixtureFormTask,
@@ -63,6 +63,39 @@ test('visual source clicks only capture-bound and never types', () => {
     [candidate?.arguments.x, candidate?.arguments.y],
     [submit.handle.x + submit.handle.width / 2, submit.handle.y + submit.handle.height / 2]
   );
+});
+
+test('visual grid source clicks only capture-bound and never types', () => {
+  const loc = {
+    success: true,
+    targetDescription: 'Submit Button',
+    clickX: 120,
+    clickY: 45,
+  };
+  const gridSource: CandidateSource = new VisualGridSource(
+    loc,
+    123,
+    456,
+    'cap-xyz',
+    'background',
+    false
+  );
+  assert.equal(gridSource.kind, 'visual');
+  const submit = gridSource.find('button', 'submit button');
+  assert.ok(submit);
+  assert.equal(gridSource.click(submit, 'c', 'd'), undefined);
+  assert.equal(gridSource.typeText(submit, 'x', 'c', 'd'), undefined);
+
+  const bound = new VisualGridSource(loc, 123, 456, 'cap-xyz', 'background', true);
+  const candidate = bound.click(submit, 'c', 'd');
+  assert.ok(candidate);
+  assert.equal(candidate.tool, 'click');
+  assert.equal(candidate.captureId, 'cap-xyz');
+  assert.equal(candidate.arguments.delivery_mode, 'background');
+  assert.equal(candidate.arguments.x, 120);
+  assert.equal(candidate.arguments.y, 45);
+  assert.equal(candidate.arguments.pid, 123);
+  assert.equal(candidate.arguments.window_id, 456);
 });
 
 test('built-in task declares its spec', () => {

@@ -211,6 +211,83 @@ export class VisualRegionSource implements CandidateSource {
 }
 
 /**
+ * Controls from hierarchical probabilistic visual grid localization (Clef).
+ *
+ * Locates targets in visual screenshot space before constructing the source.
+ * find matches the localized target description (ASCII case-insensitive)
+ * and returns a control only when localization succeeded for that target.
+ * click is offered only when Driver advertises capture-bound click
+ * (captureBound); it targets the resolved click (x, y) coordinates
+ * with the exact capture_id and authorized delivery mode.
+ * typeText returns undefined.
+ */
+export class VisualGridSource implements CandidateSource {
+  readonly kind = 'visual' as const;
+
+  constructor(
+    readonly localization:
+      | {
+          success: boolean;
+          targetDescription?: string;
+          clickX?: number;
+          clickY?: number;
+        }
+      | undefined,
+    readonly pid: number,
+    readonly windowId: number,
+    readonly captureId: string,
+    readonly delivery: VisualDelivery = 'background',
+    readonly captureBound = false,
+    readonly screenshotReference?: string
+  ) {}
+
+  find(role: string, name: string): Control | undefined {
+    if (!this.localization || !this.localization.success) {
+      return undefined;
+    }
+    const targetDesc = this.localization.targetDescription || '';
+    if (asciiLower(targetDesc) !== asciiLower(name)) {
+      return undefined;
+    }
+    return {
+      source: 'visual',
+      role,
+      name: targetDesc,
+      value: undefined,
+      handle: this.localization,
+    };
+  }
+
+  click(control: Control, candidateId: string, description: string): Candidate | undefined {
+    if (!this.captureBound) return undefined;
+    if (!this.localization || !this.localization.success) return undefined;
+    const { clickX, clickY } = this.localization;
+    if (clickX === undefined || clickY === undefined) return undefined;
+
+    return immutableCandidate({
+      id: candidateId,
+      description,
+      tool: 'click',
+      arguments: {
+        pid: this.pid,
+        window_id: this.windowId,
+        x: clickX,
+        y: clickY,
+        capture_id: this.captureId,
+        delivery_mode: this.delivery,
+      },
+      captureId: this.captureId,
+      screenshotReference: this.screenshotReference,
+      source: 'visual',
+    });
+  }
+
+  typeText(): undefined {
+    return undefined;
+  }
+}
+
+/**
  * Controls from one get_window_state observation, acted on by element token.
  * click binds the control's element_token with delivery_mode; typeText sets
  * task-supplied text through set_value (default) or element-bound type_text.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -82,28 +81,31 @@ def clamp_crop_window(
 ) -> CropBox:
     """Position a crop window centered at (center_x, center_y) clamped to image boundaries.
 
-    Ensures that crop dimensions never shrink even when hitting boundaries:
-    new_left = max(0, min(int(center_x - crop_w // 2), image_w - crop_w))
-    new_top = max(0, min(int(center_y - crop_h // 2), image_h - crop_h))
+    Ensures that crop dimensions maintain constant dimensions and rejects oversized crops.
     """
     if image_w <= 0 or image_h <= 0:
         raise ValueError(f"Image dimensions must be positive, got ({image_w}, {image_h})")
 
-    actual_w = min(int(crop_w), image_w)
-    actual_h = min(int(crop_h), image_h)
+    if crop_w <= 0 or crop_h <= 0:
+        raise ValueError(f"Crop dimensions must be positive, got ({crop_w}, {crop_h})")
 
-    if actual_w >= image_w:
+    if crop_w > image_w or crop_h > image_h:
+        raise ValueError(
+            f"Configured crop size ({crop_w}, {crop_h}) exceeds image dimensions ({image_w}, {image_h})"
+        )
+
+    if crop_w == image_w:
         new_left = 0
     else:
-        new_left = max(0, min(int(round(center_x - actual_w / 2.0)), image_w - actual_w))
+        new_left = max(0, min(int(round(center_x - crop_w / 2.0)), image_w - crop_w))
 
-    if actual_h >= image_h:
+    if crop_h == image_h:
         new_top = 0
     else:
-        new_top = max(0, min(int(round(center_y - actual_h / 2.0)), image_h - actual_h))
+        new_top = max(0, min(int(round(center_y - crop_h / 2.0)), image_h - crop_h))
 
-    new_right = new_left + actual_w
-    new_bottom = new_top + actual_h
+    new_right = new_left + crop_w
+    new_bottom = new_top + crop_h
     return CropBox(left=new_left, top=new_top, right=new_right, bottom=new_bottom)
 
 

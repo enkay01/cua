@@ -209,6 +209,68 @@ class VisualRegionSource:
 
 
 @dataclass(frozen=True)
+class VisualGridSource:
+    """Controls from hierarchical probabilistic visual grid localization (Clef).
+
+    Locates targets in visual screenshot space before constructing the source.
+    ``find`` matches the localized target description (ASCII case-insensitive)
+    and returns a control only when localization succeeded for that target.
+    ``click`` is offered only when Driver advertises capture-bound click
+    (``capture_bound``); it targets the resolved click (x, y) coordinates
+    with the exact ``capture_id`` and authorized ``delivery`` mode.
+    ``type_text`` returns None.
+    """
+
+    localization: Any
+    pid: int
+    window_id: int
+    capture_id: str
+    delivery: VisualDelivery = "background"
+    capture_bound: bool = False
+    screenshot_reference: Any = None
+    kind: ClassVar[SourceKind] = "visual"
+
+    def find(self, role: str, name: str) -> Control | None:
+        if not self.localization or not getattr(self.localization, "success", False):
+            return None
+        target_desc = getattr(self.localization, "target_description", "")
+        if _ascii_lower(target_desc) != _ascii_lower(name):
+            return None
+        return Control("visual", role, target_desc, None, self.localization)
+
+    def click(self, control: Control, *, candidate_id: str, description: str) -> Candidate | None:
+        if not self.capture_bound:
+            return None
+        if not self.localization or not getattr(self.localization, "success", False):
+            return None
+        x = getattr(self.localization, "click_x", None)
+        y = getattr(self.localization, "click_y", None)
+        if x is None or y is None:
+            return None
+        return Candidate(
+            candidate_id,
+            description,
+            "click",
+            {
+                "pid": self.pid,
+                "window_id": self.window_id,
+                "x": x,
+                "y": y,
+                "capture_id": self.capture_id,
+                "delivery_mode": self.delivery,
+            },
+            capture_id=self.capture_id,
+            screenshot_reference=self.screenshot_reference,
+            source="visual",
+        )
+
+    def type_text(
+        self, control: Control, text: str, *, candidate_id: str, description: str
+    ) -> None:
+        return None
+
+
+@dataclass(frozen=True)
 class NativeAccessibilitySource:
     """Controls from one ``get_window_state`` observation, acted on by token.
 
