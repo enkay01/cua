@@ -150,3 +150,13 @@ def test_malformed_responses_without_network() -> None:
                 }
             }
         }, expected_criteria=ALL_CELLS)
+
+
+def test_evaluate_grid_non_positive_timeout_raises_timeout_error() -> None:
+    client = ClefClient(account_id="fake-account", api_token="fake-token")
+    img = Image.new("RGB", (50, 50))
+    with pytest.raises(TimeoutError, match="Inference timed out"):
+        client.evaluate_grid(img, "find element", timeout=0)
+    with pytest.raises(TimeoutError, match="Inference timed out"):
+        client.evaluate_grid(img, "find element", timeout=-1.5)
+

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 from PIL import Image
+import httpx
 
 from clef_adapter import ClefChoiceResult, ClefClient
 from grid import (
@@ -150,15 +151,28 @@ class ClefGridLocalizer:
         records: list[IterationRecord] = []
 
         effective_timeout = timeout if timeout is not None else self.deadline_seconds
+        if effective_timeout <= 0:
+            return LocalizationResult(
+                success=False,
+                status="abstained_timeout",
+                target_description=target_description,
+                capture_id=capture_id,
+                target_pid=pid,
+                target_window_id=window_id,
+                screenshot_w=root_w,
+                screenshot_h=root_h,
+                iterations=tuple(records),
+                reason=f"Inference deadline {effective_timeout:.1f}s exceeded",
+            )
         start_time = time.monotonic()
-        deadline = start_time + effective_timeout if effective_timeout > 0 else float("inf")
+        deadline = start_time + effective_timeout if effective_timeout != float("inf") else float("inf")
 
         debug_path = Path(debug_dir) if debug_dir else None
         if debug_path:
             debug_path.mkdir(parents=True, exist_ok=True)
 
         for level in range(1, self.num_levels + 1):
-            if time.monotonic() > deadline:
+            if time.monotonic() >= deadline:
                 return LocalizationResult(
                     success=False,
                     status="abstained_timeout",
@@ -196,8 +210,40 @@ class ClefGridLocalizer:
 
             # Evaluate with Clef
             prompt = f"Select the grid cell containing {target_description}"
-            remaining_time = deadline - time.monotonic() if deadline != float("inf") else None
-            eval_result = self.client.evaluate_grid(grid_crop, prompt, timeout=remaining_time)
+            if deadline != float("inf"):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return LocalizationResult(
+                        success=False,
+                        status="abstained_timeout",
+                        target_description=target_description,
+                        capture_id=capture_id,
+                        target_pid=pid,
+                        target_window_id=window_id,
+                        screenshot_w=root_w,
+                        screenshot_h=root_h,
+                        iterations=tuple(records),
+                        reason=f"Inference deadline {effective_timeout:.1f}s exceeded before level {level}",
+                    )
+                remaining_time = max(0.001, remaining)
+            else:
+                remaining_time = None
+
+            try:
+                eval_result = self.client.evaluate_grid(grid_crop, prompt, timeout=remaining_time)
+            except (TimeoutError, httpx.TimeoutException):
+                return LocalizationResult(
+                    success=False,
+                    status="abstained_timeout",
+                    target_description=target_description,
+                    capture_id=capture_id,
+                    target_pid=pid,
+                    target_window_id=window_id,
+                    screenshot_w=root_w,
+                    screenshot_h=root_h,
+                    iterations=tuple(records),
+                    reason=f"Inference deadline {effective_timeout:.1f}s exceeded during level {level}",
+                )
 
             # Check confidence floor
             top_cell, top_conf = eval_result.top_candidate

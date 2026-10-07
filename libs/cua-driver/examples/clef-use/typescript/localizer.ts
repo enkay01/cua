@@ -98,8 +98,16 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
   const localizer = new ClefGridLocalizer(client, { numLevels: levels });
 
+  const fileBuf = fs.readFileSync(imagePath);
   console.log(`Localizing target: ${JSON.stringify(prompt)} in ${imagePath} (${dims.width}x${dims.height})...`);
-  const result = await localizer.localize(dims, prompt);
+  const result = await localizer.localize(
+    {
+      width: dims.width,
+      height: dims.height,
+      base64: fileBuf.toString('base64'),
+    },
+    prompt
+  );
 
   console.log(`\nLocalization Result: ${result.status.toUpperCase()}`);
   for (const rec of result.iterations) {

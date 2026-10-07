@@ -164,4 +164,46 @@ describe('TypeScript ClefGridLocalizer', () => {
       /exceeds screenshot dimensions/
     );
   });
+
+  test('screenshot image base64 and dataUri are stripped and passed to evaluateGrid', async () => {
+    let capturedImage: unknown;
+    const client = new ClefClient({
+      mockHandler: (img) => {
+        capturedImage = img;
+        return createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {});
+      },
+    });
+    const localizer = new ClefGridLocalizer(client, { numLevels: 1 });
+
+    // Passing object with dataUri
+    await localizer.localize(
+      { width: 100, height: 100, dataUri: 'data:image/jpeg;base64,QUJD' },
+      'button'
+    );
+    assert.equal(capturedImage, 'QUJD');
+
+    // Passing object with base64
+    await localizer.localize(
+      { width: 100, height: 100, base64: 'REVGRw==' },
+      'button'
+    );
+    assert.equal(capturedImage, 'REVGRw==');
+  });
+
+  test('timeout deadline <= 0 returns abstained_timeout without unbounded call', async () => {
+    let callCount = 0;
+    const client = new ClefClient({
+      mockHandler: () => {
+        callCount++;
+        return createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {});
+      },
+    });
+    const localizer = new ClefGridLocalizer(client, { numLevels: 1, deadlineMs: 0 });
+    const result = await localizer.localize({ width: 100, height: 100 }, 'target');
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'abstained_timeout');
+    assert.equal(callCount, 0);
+  });
 });
+

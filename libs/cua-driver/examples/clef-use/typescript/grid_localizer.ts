@@ -210,6 +210,129 @@ export function renderGridOverlay(
   };
 }
 
+export interface LocalizerImageDimensions {
+  width: number;
+  height: number;
+}
+
+export interface LocalizerImageObject {
+  width?: number;
+  height?: number;
+  base64?: string;
+  dataUri?: string;
+  buffer?: Buffer;
+}
+
+export type LocalizerImageInput =
+  | LocalizerImageDimensions
+  | LocalizerImageObject
+  | Buffer
+  | string;
+
+export function getImageDimensionsFromBuffer(buf: Buffer): { width: number; height: number } {
+  // PNG: signature 0x89 0x50 0x4e 0x47
+  if (
+    buf.length >= 24 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    return { width, height };
+  }
+
+  // JPEG: starts with 0xff 0xd8
+  if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    let offset = 2;
+    while (offset < buf.length) {
+      if (buf[offset] !== 0xff) {
+        offset++;
+        continue;
+      }
+      const marker = buf[offset + 1];
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        const height = buf.readUInt16BE(offset + 5);
+        const width = buf.readUInt16BE(offset + 7);
+        return { width, height };
+      }
+      offset += 2 + buf.readUInt16BE(offset + 2);
+    }
+  }
+
+  throw new Error('Unsupported image format or failed to read dimensions from buffer');
+}
+
+export function stripDataUriPrefix(value: string): string {
+  return value.replace(/^data:[^;]+;base64,/, '').trim();
+}
+
+export function resolveImageInput(image: LocalizerImageInput): {
+  width: number;
+  height: number;
+  base64?: string;
+} {
+  if (Buffer.isBuffer(image)) {
+    const dims = getImageDimensionsFromBuffer(image);
+    return {
+      width: dims.width,
+      height: dims.height,
+      base64: image.toString('base64'),
+    };
+  }
+
+  if (typeof image === 'string') {
+    const rawBase64 = stripDataUriPrefix(image);
+    const buf = Buffer.from(rawBase64, 'base64');
+    const dims = getImageDimensionsFromBuffer(buf);
+    return {
+      width: dims.width,
+      height: dims.height,
+      base64: rawBase64,
+    };
+  }
+
+  if (typeof image === 'object' && image !== null) {
+    let rawBase64: string | undefined;
+    if ('base64' in image && typeof (image as { base64?: unknown }).base64 === 'string') {
+      rawBase64 = stripDataUriPrefix((image as { base64: string }).base64);
+    } else if ('dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string') {
+      rawBase64 = stripDataUriPrefix((image as { dataUri: string }).dataUri);
+    } else if ('buffer' in image && Buffer.isBuffer((image as { buffer?: unknown }).buffer)) {
+      rawBase64 = (image as { buffer: Buffer }).buffer.toString('base64');
+    }
+
+    let width = 'width' in image && typeof (image as { width?: unknown }).width === 'number'
+      ? (image as { width: number }).width
+      : undefined;
+    let height = 'height' in image && typeof (image as { height?: unknown }).height === 'number'
+      ? (image as { height: number }).height
+      : undefined;
+
+    if ((width === undefined || height === undefined) && rawBase64) {
+      const buf = Buffer.from(rawBase64, 'base64');
+      const dims = getImageDimensionsFromBuffer(buf);
+      width = dims.width;
+      height = dims.height;
+    }
+
+    if (width === undefined || height === undefined) {
+      throw new Error(
+        'Image dimensions (width, height) must be provided or derivable from image data'
+      );
+    }
+
+    return {
+      width,
+      height,
+      base64: rawBase64,
+    };
+  }
+
+  throw new Error(`Unsupported image input type: ${typeof image}`);
+}
+
 export interface IterationRecord {
   level: number;
   cropBox: CropBox;
@@ -316,22 +439,38 @@ export class ClefGridLocalizer {
   }
 
   public async localize(
-    image: { width: number; height: number },
+    image: LocalizerImageInput,
     targetDescription: string,
     options: LocalizeRunOptions = {}
   ): Promise<LocalizationResult> {
-    const rootW = image.width;
-    const rootH = image.height;
+    const resolved = resolveImageInput(image);
+    const rootW = resolved.width;
+    const rootH = resolved.height;
+    const screenshotBase64 = resolved.base64;
     let activeCenterX = rootW / 2.0;
     let activeCenterY = rootH / 2.0;
     const records: IterationRecord[] = [];
 
     const effectiveTimeout = options.timeoutMs !== undefined ? options.timeoutMs : this.deadlineMs;
+    if (effectiveTimeout <= 0) {
+      return createLocalizationResult({
+        success: false,
+        status: 'abstained_timeout',
+        targetDescription,
+        captureId: options.captureId,
+        targetPid: options.pid,
+        targetWindowId: options.windowId,
+        screenshotW: rootW,
+        screenshotH: rootH,
+        iterations: records,
+        reason: `Inference deadline ${effectiveTimeout}ms exceeded`,
+      });
+    }
     const startTime = Date.now();
-    const deadline = effectiveTimeout > 0 ? startTime + effectiveTimeout : Infinity;
+    const deadline = Number.isFinite(effectiveTimeout) ? startTime + effectiveTimeout : Infinity;
 
     for (let level = 1; level <= this.numLevels; level++) {
-      if (Date.now() > deadline) {
+      if (Date.now() >= deadline) {
         return createLocalizationResult({
           success: false,
           status: 'abstained_timeout',
@@ -357,17 +496,56 @@ export class ClefGridLocalizer {
       const cropBox = clampCropWindow(activeCenterX, activeCenterY, cropW, cropH, rootW, rootH);
       const overlay = renderGridOverlay({ width: cropW, height: cropH });
 
-      // Support passing an image (base64 string, Buffer, or data URI) with overlay fallback
-      const payloadImage =
-        'base64' in image && typeof (image as { base64?: unknown }).base64 === 'string'
-          ? (image as { base64: string }).base64
-          : 'dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string'
-          ? (image as { dataUri: string }).dataUri
-          : overlay.svg;
+      const payloadImage = screenshotBase64 ?? overlay.svg;
 
-      const remainingTimeMs = deadline !== Infinity ? Math.max(0, deadline - Date.now()) : undefined;
+      if (deadline !== Infinity) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          return createLocalizationResult({
+            success: false,
+            status: 'abstained_timeout',
+            targetDescription,
+            captureId: options.captureId,
+            targetPid: options.pid,
+            targetWindowId: options.windowId,
+            screenshotW: rootW,
+            screenshotH: rootH,
+            iterations: records,
+            reason: `Inference deadline ${effectiveTimeout}ms exceeded before level ${level}`,
+          });
+        }
+      }
+
+      const remainingTimeMs =
+        deadline !== Infinity ? Math.max(1, deadline - Date.now()) : undefined;
       const prompt = `Select the grid cell containing ${targetDescription}`;
-      const evalResult = await this.client.evaluateGrid(payloadImage, prompt, undefined, remainingTimeMs);
+
+      let evalResult: ClefChoiceResult;
+      try {
+        evalResult = await this.client.evaluateGrid(payloadImage, prompt, undefined, remainingTimeMs);
+      } catch (err: unknown) {
+        if (
+          err instanceof Error &&
+          (err.name === 'TimeoutError' ||
+            err.name === 'AbortError' ||
+            err.message.toLowerCase().includes('timeout') ||
+            err.message.toLowerCase().includes('aborted'))
+        ) {
+          return createLocalizationResult({
+            success: false,
+            status: 'abstained_timeout',
+            targetDescription,
+            captureId: options.captureId,
+            targetPid: options.pid,
+            targetWindowId: options.windowId,
+            screenshotW: rootW,
+            screenshotH: rootH,
+            iterations: records,
+            reason: `Inference timed out during level ${level}`,
+          });
+        }
+        throw err;
+      }
 
       const [topCell, topConf] = evalResult.topCandidate;
       if (topConf < this.minConfidence) {
