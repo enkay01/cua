@@ -80,6 +80,8 @@ Ground window actions on the PNG from that exact `get_window_state`; ground desk
 
 The harness may downsample the displayed preview independently of the returned PNG. Use the returned dimensions and the original file. If measuring on a resized preview, account for its exact scale in both axes; do not assume the preview is native resolution. Do not guess from accessibility frames or another app's geometry.
 
+When the accessibility tree exposes no usable control for the target, never estimate pixel coordinates by eye from the screenshot. Save the observation with `screenshot_out_file`, resolve the click point through the companion `clef-visual-localization` MCP server's `locate_visual_target` tool (setup in `libs/cua-driver/examples/clef-use/README.md`), then dispatch Driver's `click` with the returned `click_x`/`click_y` and the matching `capture_id`. A `success:false` abstention is a failed observation: reobserve or choose another route instead of guessing.
+
 After movement, resize, navigation, or a competing desktop interaction, reobserve. When using `zoom`, read its schema and preserve the `from_zoom` mapping on the supported follow-up action. A manually cropped image requires its crop offset; an untracked crop is not an action coordinate source.
 
 For tiny targets, inspect at full resolution or annotate a copy without changing its dimensions. Keep the raw evidence unmodified. `debug_image_out`, where advertised, captures an action diagnostic; it is not a pre-action approval step.

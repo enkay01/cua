@@ -27,6 +27,8 @@ The implementation provides matching Python and TypeScript implementations:
   - `python/grid_localizer.py`: 3-level zoom loop, non-adjacent competitor ambiguity checks, inference deadline enforcement, and capture-bound result objects.
   - `python/sources.py`: `VisualGridSource` conforming to the `CandidateSource` protocol.
   - `python/localizer.py`: Standalone CLI runner.
+  - `python/server.py`: Companion MCP server exposing `locate_visual_target` (see below).
+  - `python/tests/test_server.py`: Offline tests for the MCP tool (fixture success, credential refusal, invalid image, abstention).
 - TypeScript package (`typescript/`):
   - `typescript/grid_localizer.ts`: Grid geometry, boundary clamping, SVG overlay generation, `ClefGridLocalizer`, and observation match validation.
   - `typescript/clef_adapter.ts`: Cloudflare Workers AI adapter, score schema validation, and fixture replay.
@@ -110,6 +112,66 @@ export CLOUDFLARE_ACCOUNT_ID="your-account-id"
 ```
 
 Pass the optional `--model` flag to select between `@cf/cloudflare/clef` and `@cf/cloudflare/clef-flash`.
+
+## Companion MCP server for agents
+
+`python/server.py` exposes the localizer to agents as the `locate_visual_target` MCP tool, so Cua Driver workflows never estimate pixel coordinates by eye. The tool takes a saved screenshot path (from Driver's `screenshot_out_file`) and returns display-space click coordinates bound to the originating capture.
+
+### Setup
+
+Install the server dependencies and provide Cloudflare credentials via environment or a local `.env` / `.env.local` file (auto-loaded on each tool call):
+
+```bash
+uv sync --project libs/cua-driver/examples/clef-use --group dev
+export CLOUDFLARE_API_TOKEN="your-token"
+export CLOUDFLARE_ACCOUNT_ID="your-account-id"
+```
+
+### Agent MCP configuration
+
+Register the companion alongside Cua Driver in the agent's MCP configuration (paths relative to the repository root):
+
+```json
+{
+  "mcpServers": {
+    "clef-visual-localization": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "libs/cua-driver/examples/clef-use",
+        "--group",
+        "dev",
+        "python",
+        "libs/cua-driver/examples/clef-use/python/server.py"
+      ],
+      "env": {
+        "CLOUDFLARE_API_TOKEN": "your-token",
+        "CLOUDFLARE_ACCOUNT_ID": "your-account-id"
+      }
+    }
+  }
+}
+```
+
+### Tool usage
+
+1. Capture the exact target window with Driver, saving the screenshot to disk:
+   `get_window_state({pid, window_id, screenshot_out_file: "/absolute/run-dir/before.png"})`.
+2. Call `locate_visual_target` with the saved path and a short target description:
+   ```json
+   {
+     "image_path": "/absolute/run-dir/before.png",
+     "prompt": "Terminal close button",
+     "capture_id": "capture-from-current-observation",
+     "pid": 844,
+     "window_id": 10725
+   }
+   ```
+3. On `success: true`, dispatch one Driver `click` with the returned `click_x`, `click_y`, target, and the same `capture_id`; then reobserve from fresh state.
+4. On `success: false`, do not act: `abstained_low_confidence`, `abstained_ambiguous`, and `abstained_timeout` mean the target could not be resolved, `unconfigured_credentials` means the server lacks Cloudflare credentials, and `invalid_image` means the screenshot path was wrong.
+
+For offline verification without credentials, pass `mock_fixture_paths` pointing at the checked-in `fixtures/clef-localization-level*.json` files. `mock_fixture_paths` is an explicit verification seam: results computed from fixtures carry `"mock": true` (live inference carries `"mock": false`), so callers can tell fixture replay apart from real localization. Blank entries are ignored, and with no usable fixtures the tool falls through to the normal credential guard.
 
 ## Running tests
 
