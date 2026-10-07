@@ -40,7 +40,9 @@ export function parseCellName(cellName: string): [number, number] {
   const rowChar = name[1];
   const colIdx = COLUMNS.indexOf(colChar as (typeof COLUMNS)[number]);
   if (colIdx === -1) {
-    throw new Error(`Invalid column: "${colChar}" in cell "${cellName}". Allowed: ${COLUMNS.join(', ')}`);
+    throw new Error(
+      `Invalid column: "${colChar}" in cell "${cellName}". Allowed: ${COLUMNS.join(', ')}`
+    );
   }
   const rowIdx = ROWS.indexOf(rowChar as (typeof ROWS)[number]);
   if (rowIdx === -1) {
@@ -75,13 +77,11 @@ export function clampCropWindow(
     );
   }
 
-  const newLeft = cropW === imageW
-    ? 0
-    : Math.max(0, Math.min(Math.round(centerX - cropW / 2.0), imageW - cropW));
+  const newLeft =
+    cropW === imageW ? 0 : Math.max(0, Math.min(Math.round(centerX - cropW / 2.0), imageW - cropW));
 
-  const newTop = cropH === imageH
-    ? 0
-    : Math.max(0, Math.min(Math.round(centerY - cropH / 2.0), imageH - cropH));
+  const newTop =
+    cropH === imageH ? 0 : Math.max(0, Math.min(Math.round(centerY - cropH / 2.0), imageH - cropH));
 
   const newRight = newLeft + cropW;
   const newBottom = newTop + cropH;
@@ -162,13 +162,17 @@ export function renderGridSvgOverlay(
   // Vertical lines
   for (let c = 1; c < 5; c++) {
     const x = Math.round((c * width) / 5.0);
-    lines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${height}" stroke="${lineColor}" stroke-width="${lineWidth}" />`);
+    lines.push(
+      `<line x1="${x}" y1="0" x2="${x}" y2="${height}" stroke="${lineColor}" stroke-width="${lineWidth}" />`
+    );
   }
 
   // Horizontal lines
   for (let r = 1; r < 5; r++) {
     const y = Math.round((r * height) / 5.0);
-    lines.push(`<line x1="0" y1="${y}" x2="${width}" y2="${y}" stroke="${lineColor}" stroke-width="${lineWidth}" />`);
+    lines.push(
+      `<line x1="0" y1="${y}" x2="${width}" y2="${y}" stroke="${lineColor}" stroke-width="${lineWidth}" />`
+    );
   }
 
   // Highlight rectangle
@@ -223,11 +227,7 @@ export interface LocalizerImageObject {
   buffer?: Buffer;
 }
 
-export type LocalizerImageInput =
-  | LocalizerImageDimensions
-  | LocalizerImageObject
-  | Buffer
-  | string;
+export type LocalizerImageInput = LocalizerImageDimensions | LocalizerImageObject | Buffer | string;
 
 export function getImageDimensionsFromBuffer(buf: Buffer): { width: number; height: number } {
   // PNG: signature 0x89 0x50 0x4e 0x47
@@ -303,12 +303,14 @@ export function resolveImageInput(image: LocalizerImageInput): {
       rawBase64 = (image as { buffer: Buffer }).buffer.toString('base64');
     }
 
-    let width = 'width' in image && typeof (image as { width?: unknown }).width === 'number'
-      ? (image as { width: number }).width
-      : undefined;
-    let height = 'height' in image && typeof (image as { height?: unknown }).height === 'number'
-      ? (image as { height: number }).height
-      : undefined;
+    let width =
+      'width' in image && typeof (image as { width?: unknown }).width === 'number'
+        ? (image as { width: number }).width
+        : undefined;
+    let height =
+      'height' in image && typeof (image as { height?: unknown }).height === 'number'
+        ? (image as { height: number }).height
+        : undefined;
 
     if ((width === undefined || height === undefined) && rawBase64) {
       const buf = Buffer.from(rawBase64, 'base64');
@@ -365,7 +367,9 @@ export interface LocalizationResult {
   }): boolean;
 }
 
-export function createLocalizationResult(init: Omit<LocalizationResult, 'matchesObservation'>): LocalizationResult {
+export function createLocalizationResult(
+  init: Omit<LocalizationResult, 'matchesObservation'>
+): LocalizationResult {
   return {
     ...init,
     matchesObservation(obs) {
@@ -376,13 +380,25 @@ export function createLocalizationResult(init: Omit<LocalizationResult, 'matches
       if (init.targetPid !== undefined && obs.pid !== undefined && obs.pid !== init.targetPid) {
         return false;
       }
-      if (init.targetWindowId !== undefined && obs.windowId !== undefined && obs.windowId !== init.targetWindowId) {
+      if (
+        init.targetWindowId !== undefined &&
+        obs.windowId !== undefined &&
+        obs.windowId !== init.targetWindowId
+      ) {
         return false;
       }
-      if (init.screenshotW !== undefined && obs.width !== undefined && obs.width !== init.screenshotW) {
+      if (
+        init.screenshotW !== undefined &&
+        obs.width !== undefined &&
+        obs.width !== init.screenshotW
+      ) {
         return false;
       }
-      if (init.screenshotH !== undefined && obs.height !== undefined && obs.height !== init.screenshotH) {
+      if (
+        init.screenshotH !== undefined &&
+        obs.height !== undefined &&
+        obs.height !== init.screenshotH
+      ) {
         return false;
       }
       return true;
@@ -496,6 +512,9 @@ export class ClefGridLocalizer {
       const cropBox = clampCropWindow(activeCenterX, activeCenterY, cropW, cropH, rootW, rootH);
       const overlay = renderGridOverlay({ width: cropW, height: cropH });
 
+      // In TypeScript environments without native raster imaging libraries (such as Pillow in Python),
+      // the raw full screenshot is forwarded directly to Clef. Full image forwarding avoids native C++
+      // compilation dependencies while preserving end-to-end execution across platforms.
       const payloadImage = screenshotBase64 ?? overlay.svg;
 
       if (deadline !== Infinity) {
@@ -522,7 +541,12 @@ export class ClefGridLocalizer {
 
       let evalResult: ClefChoiceResult;
       try {
-        evalResult = await this.client.evaluateGrid(payloadImage, prompt, undefined, remainingTimeMs);
+        evalResult = await this.client.evaluateGrid(
+          payloadImage,
+          prompt,
+          undefined,
+          remainingTimeMs
+        );
       } catch (err: unknown) {
         if (
           err instanceof Error &&

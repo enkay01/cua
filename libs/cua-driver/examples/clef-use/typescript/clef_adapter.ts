@@ -18,7 +18,10 @@ export function loadEnvFiles(): void {
             const idx = line.indexOf('=');
             const key = line.slice(0, idx).trim();
             let val = line.slice(idx + 1).trim();
-            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            if (
+              (val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))
+            ) {
               val = val.slice(1, -1);
             }
             if (key && !process.env[key]) {
@@ -61,8 +64,12 @@ export function createClefChoiceResult(
   model: string,
   rawResponse: unknown
 ): ClefChoiceResult {
-  const sortedCandidates = Object.entries(probabilities).sort((a, b) => b[1] - a[1]) as [string, number][];
-  const topCandidate: [string, number] = sortedCandidates.length > 0 ? sortedCandidates[0] : [choice, confidence];
+  const sortedCandidates = Object.entries(probabilities).sort((a, b) => b[1] - a[1]) as [
+    string,
+    number,
+  ][];
+  const topCandidate: [string, number] =
+    sortedCandidates.length > 0 ? sortedCandidates[0] : [choice, confidence];
   const runnerUpCandidate: [string, number] | undefined =
     sortedCandidates.length > 1 ? sortedCandidates[1] : undefined;
 
@@ -102,11 +109,18 @@ export function buildClefRequest(
   model: string = DEFAULT_MODEL
 ): Record<string, unknown> {
   const modelSlug = model.toLowerCase().includes('flash') ? 'clef-flash' : 'clef';
-  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '').trim();
+  let imageUrl: string;
+  if (imageBase64.startsWith('<svg')) {
+    const b64 = Buffer.from(imageBase64).toString('base64');
+    imageUrl = `data:image/svg+xml;base64,${b64}`;
+  } else {
+    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '').trim();
+    imageUrl = `data:image/jpeg;base64,${cleanBase64}`;
+  }
   return {
     model: modelSlug,
     state: `Screenshot with 5x5 grid overlay (columns A-E, rows 1-5). Locate target: ${instructions}`,
-    images: [`data:image/jpeg;base64,${cleanBase64}`],
+    images: [imageUrl],
     questions: {
       target_cell: {
         type: 'choice',
@@ -127,18 +141,22 @@ export function parseClefResponse(
   }
 
   const raw = data as Record<string, unknown>;
-  const result = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as Record<string, unknown>;
+  const result = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as Record<
+    string,
+    unknown
+  >;
 
-  const answersDict =
-    (result.answers && typeof result.answers === 'object'
+  const answersDict = (
+    result.answers && typeof result.answers === 'object'
       ? result.answers
       : result.choices && typeof result.choices === 'object'
-      ? result.choices
-      : {}) as Record<string, unknown>;
+        ? result.choices
+        : {}
+  ) as Record<string, unknown>;
 
   const targetChoice = (answersDict.target_cell || {}) as Record<string, unknown>;
   if (typeof targetChoice !== 'object' || targetChoice === null) {
-    throw new Error("Invalid target_cell entry: expected object");
+    throw new Error('Invalid target_cell entry: expected object');
   }
 
   const rawChoice = targetChoice.choice;
@@ -146,7 +164,7 @@ export function parseClefResponse(
 
   const rawProbs = (targetChoice.probabilities || {}) as Record<string, unknown>;
   if (typeof rawProbs !== 'object' || rawProbs === null) {
-    throw new Error("Invalid probabilities field: expected object");
+    throw new Error('Invalid probabilities field: expected object');
   }
 
   const expectedSet = new Set(expectedCriteria.map((c) => c.trim().toUpperCase()));
@@ -183,7 +201,7 @@ export function parseClefResponse(
   }
 
   if (!choice) {
-    throw new Error("Malformed response: neither choice nor probabilities provided in target_cell");
+    throw new Error('Malformed response: neither choice nor probabilities provided in target_cell');
   }
 
   if (!expectedSet.has(choice)) {
@@ -208,14 +226,20 @@ export interface ClefClientOptions {
   apiToken?: string;
   model?: string;
   mockFixturePaths?: (string | URL)[];
-  mockHandler?: (image: unknown, instructions: string) => Promise<ClefChoiceResult> | ClefChoiceResult;
+  mockHandler?: (
+    image: unknown,
+    instructions: string
+  ) => Promise<ClefChoiceResult> | ClefChoiceResult;
 }
 
 export class ClefClient {
   public accountId?: string;
   public apiToken?: string;
   public model: string;
-  public mockHandler?: (image: unknown, instructions: string) => Promise<ClefChoiceResult> | ClefChoiceResult;
+  public mockHandler?: (
+    image: unknown,
+    instructions: string
+  ) => Promise<ClefChoiceResult> | ClefChoiceResult;
   private fixtureQueue: string[];
   private fixtureIndex = 0;
 
@@ -270,8 +294,8 @@ export class ClefClient {
       typeof image === 'string'
         ? image.replace(/^data:[^;]+;base64,/, '').trim()
         : Buffer.isBuffer(image)
-        ? image.toString('base64')
-        : '';
+          ? image.toString('base64')
+          : '';
     const payload = buildClefRequest(b64, instructions, criteria, this.model);
 
     let signal: AbortSignal | undefined;
