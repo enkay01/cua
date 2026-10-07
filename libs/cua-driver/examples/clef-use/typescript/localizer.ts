@@ -78,12 +78,15 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   let dims = getImageDimensions(imagePath);
   let fileBuf: Buffer = fs.readFileSync(imagePath);
   if (cropDesktop) {
-    dims = { width: dims.width, height: Math.max(1, dims.height - 1254) };
+    const croppedHeight = Math.max(1, dims.height - 1254);
     try {
-      fileBuf = cropJpegBuffer(fileBuf, 0, 1254, dims.width, dims.height);
+      fileBuf = cropJpegBuffer(fileBuf, 0, 1254, dims.width, croppedHeight);
+      dims = { width: dims.width, height: croppedHeight };
       console.log(`Cropped to desktop viewport: ${dims.width}x${dims.height}`);
-    } catch {
-      console.log(`Cropped to desktop viewport dimensions: ${dims.width}x${dims.height}`);
+    } catch (err: unknown) {
+      console.warn(
+        `Failed to crop desktop viewport image buffer, preserving original geometry: ${err}`
+      );
     }
   }
 
