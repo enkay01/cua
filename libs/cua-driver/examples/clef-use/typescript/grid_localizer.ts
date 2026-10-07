@@ -1,3 +1,4 @@
+import jpeg from 'jpeg-js';
 import { type ClefChoiceResult, ClefClient } from './clef_adapter.js';
 
 export const COLUMNS = ['A', 'B', 'C', 'D', 'E'] as const;
@@ -214,6 +215,144 @@ export function renderGridOverlay(
   };
 }
 
+export function cropJpegBuffer(
+  jpegBuffer: Buffer,
+  left: number,
+  top: number,
+  width: number,
+  height: number
+): Buffer {
+  const decoded = jpeg.decode(jpegBuffer, { useTArray: true });
+  const cropW = Math.max(1, Math.min(width, decoded.width - left));
+  const cropH = Math.max(1, Math.min(height, decoded.height - top));
+  const croppedData = new Uint8Array(cropW * cropH * 4);
+
+  for (let r = 0; r < cropH; r++) {
+    const srcOffset = ((top + r) * decoded.width + left) * 4;
+    const dstOffset = r * cropW * 4;
+    croppedData.set(decoded.data.subarray(srcOffset, srcOffset + cropW * 4), dstOffset);
+  }
+
+  const encoded = jpeg.encode({ data: croppedData, width: cropW, height: cropH }, 90);
+  return Buffer.from(
+    encoded.data.buffer,
+    encoded.data.byteOffset,
+    encoded.data.byteLength
+  ) as Buffer;
+}
+
+export function renderGridJpegCrop(
+  jpegBuffer: Buffer,
+  cropBox: CropBox,
+  options: {
+    lineColor?: [number, number, number];
+    lineWidth?: number;
+    highlightCell?: string;
+    highlightColor?: [number, number, number];
+  } = {}
+): string | undefined {
+  try {
+    const decoded = jpeg.decode(jpegBuffer, { useTArray: true });
+    const cropW = Math.max(1, Math.min(cropBox.width, decoded.width - cropBox.left));
+    const cropH = Math.max(1, Math.min(cropBox.height, decoded.height - cropBox.top));
+    const croppedData = new Uint8Array(cropW * cropH * 4);
+
+    for (let r = 0; r < cropH; r++) {
+      const srcOffset = ((cropBox.top + r) * decoded.width + cropBox.left) * 4;
+      const dstOffset = r * cropW * 4;
+      croppedData.set(decoded.data.subarray(srcOffset, srcOffset + cropW * 4), dstOffset);
+    }
+
+    const [lr, lg, lb] = options.lineColor || [0, 255, 120];
+    const lw = options.lineWidth || 1;
+
+    // Vertical division lines
+    for (let c = 1; c < 5; c++) {
+      const x = Math.round((c * cropW) / 5.0);
+      for (let dx = 0; dx < lw; dx++) {
+        const px = x + dx;
+        if (px >= cropW) continue;
+        for (let y = 0; y < cropH; y++) {
+          const offset = (y * cropW + px) * 4;
+          croppedData[offset] = lr;
+          croppedData[offset + 1] = lg;
+          croppedData[offset + 2] = lb;
+          croppedData[offset + 3] = 255;
+        }
+      }
+    }
+
+    // Horizontal division lines
+    for (let r = 1; r < 5; r++) {
+      const y = Math.round((r * cropH) / 5.0);
+      for (let dy = 0; dy < lw; dy++) {
+        const py = y + dy;
+        if (py >= cropH) continue;
+        for (let x = 0; x < cropW; x++) {
+          const offset = (py * cropW + x) * 4;
+          croppedData[offset] = lr;
+          croppedData[offset + 1] = lg;
+          croppedData[offset + 2] = lb;
+          croppedData[offset + 3] = 255;
+        }
+      }
+    }
+
+    // Highlight cell if specified
+    if (options.highlightCell) {
+      const [colIdx, rowIdx] = parseCellName(options.highlightCell);
+      const [hr, hg, hb] = options.highlightColor || [255, 60, 60];
+      const hlw = Math.max(2, lw + 1);
+      const x0 = Math.round((colIdx * cropW) / 5.0);
+      const x1 = Math.min(cropW - 1, Math.round(((colIdx + 1) * cropW) / 5.0));
+      const y0 = Math.round((rowIdx * cropH) / 5.0);
+      const y1 = Math.min(cropH - 1, Math.round(((rowIdx + 1) * cropH) / 5.0));
+
+      for (let x = x0; x <= x1; x++) {
+        for (let dy = 0; dy < hlw; dy++) {
+          if (y0 + dy < cropH) {
+            const off = ((y0 + dy) * cropW + x) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+          if (y1 - dy >= 0) {
+            const off = ((y1 - dy) * cropW + x) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+        }
+      }
+      for (let y = y0; y <= y1; y++) {
+        for (let dx = 0; dx < hlw; dx++) {
+          if (x0 + dx < cropW) {
+            const off = (y * cropW + x0 + dx) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+          if (x1 - dx >= 0) {
+            const off = (y * cropW + x1 - dx) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+        }
+      }
+    }
+
+    const encoded = jpeg.encode({ data: croppedData, width: cropW, height: cropH }, 85);
+    return encoded.data.toString('base64');
+  } catch {
+    return undefined;
+  }
+}
+
 export interface LocalizerImageDimensions {
   width: number;
   height: number;
@@ -272,6 +411,7 @@ export function resolveImageInput(image: LocalizerImageInput): {
   width: number;
   height: number;
   base64?: string;
+  buffer?: Buffer;
 } {
   if (Buffer.isBuffer(image)) {
     const dims = getImageDimensionsFromBuffer(image);
@@ -279,6 +419,7 @@ export function resolveImageInput(image: LocalizerImageInput): {
       width: dims.width,
       height: dims.height,
       base64: image.toString('base64'),
+      buffer: image,
     };
   }
 
@@ -290,17 +431,22 @@ export function resolveImageInput(image: LocalizerImageInput): {
       width: dims.width,
       height: dims.height,
       base64: rawBase64,
+      buffer: buf,
     };
   }
 
   if (typeof image === 'object' && image !== null) {
     let rawBase64: string | undefined;
-    if ('base64' in image && typeof (image as { base64?: unknown }).base64 === 'string') {
+    let buf: Buffer | undefined;
+    if ('buffer' in image && Buffer.isBuffer((image as { buffer?: unknown }).buffer)) {
+      buf = (image as { buffer: Buffer }).buffer;
+      rawBase64 = buf.toString('base64');
+    } else if ('base64' in image && typeof (image as { base64?: unknown }).base64 === 'string') {
       rawBase64 = stripDataUriPrefix((image as { base64: string }).base64);
+      buf = Buffer.from(rawBase64, 'base64');
     } else if ('dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string') {
       rawBase64 = stripDataUriPrefix((image as { dataUri: string }).dataUri);
-    } else if ('buffer' in image && Buffer.isBuffer((image as { buffer?: unknown }).buffer)) {
-      rawBase64 = (image as { buffer: Buffer }).buffer.toString('base64');
+      buf = Buffer.from(rawBase64, 'base64');
     }
 
     let width =
@@ -312,8 +458,7 @@ export function resolveImageInput(image: LocalizerImageInput): {
         ? (image as { height: number }).height
         : undefined;
 
-    if ((width === undefined || height === undefined) && rawBase64) {
-      const buf = Buffer.from(rawBase64, 'base64');
+    if ((width === undefined || height === undefined) && buf) {
       const dims = getImageDimensionsFromBuffer(buf);
       width = dims.width;
       height = dims.height;
@@ -329,6 +474,7 @@ export function resolveImageInput(image: LocalizerImageInput): {
       width,
       height,
       base64: rawBase64,
+      buffer: buf,
     };
   }
 
@@ -463,6 +609,7 @@ export class ClefGridLocalizer {
     const rootW = resolved.width;
     const rootH = resolved.height;
     const screenshotBase64 = resolved.base64;
+    const screenshotBuf = resolved.buffer;
     let activeCenterX = rootW / 2.0;
     let activeCenterY = rootH / 2.0;
     const records: IterationRecord[] = [];
@@ -512,10 +659,15 @@ export class ClefGridLocalizer {
       const cropBox = clampCropWindow(activeCenterX, activeCenterY, cropW, cropH, rootW, rootH);
       const overlay = renderGridOverlay({ width: cropW, height: cropH });
 
-      // In TypeScript environments without native raster imaging libraries (such as Pillow in Python),
-      // the raw full screenshot is forwarded directly to Clef. Full image forwarding avoids native C++
-      // compilation dependencies while preserving end-to-end execution across platforms.
-      const payloadImage = screenshotBase64 ?? overlay.svg;
+      // Crop the screenshot window and render the 5x5 grid overlay onto the crop per zoom level,
+      // mirroring the Python implementation so inference coordinates stay aligned with analyzed regions.
+      let payloadImage: string;
+      if (screenshotBuf) {
+        const croppedGridB64 = renderGridJpegCrop(screenshotBuf, cropBox);
+        payloadImage = croppedGridB64 ?? screenshotBase64 ?? overlay.svg;
+      } else {
+        payloadImage = screenshotBase64 ?? overlay.svg;
+      }
 
       if (deadline !== Infinity) {
         const remainingMs = deadline - Date.now();

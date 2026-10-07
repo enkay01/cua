@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClefClient } from './clef_adapter.js';
-import { ClefGridLocalizer } from './grid_localizer.js';
+import { ClefGridLocalizer, cropJpegBuffer } from './grid_localizer.js';
 
 function getImageDimensions(filePath: string): { width: number; height: number } {
   const buf = fs.readFileSync(filePath);
@@ -76,9 +76,15 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   }
 
   let dims = getImageDimensions(imagePath);
+  let fileBuf: Buffer = fs.readFileSync(imagePath);
   if (cropDesktop) {
     dims = { width: dims.width, height: Math.max(1, dims.height - 1254) };
-    console.log(`Cropped to desktop viewport: ${dims.width}x${dims.height}`);
+    try {
+      fileBuf = cropJpegBuffer(fileBuf, 0, 1254, dims.width, dims.height);
+      console.log(`Cropped to desktop viewport: ${dims.width}x${dims.height}`);
+    } catch {
+      console.log(`Cropped to desktop viewport dimensions: ${dims.width}x${dims.height}`);
+    }
   }
 
   let fixturePaths = mockFixtures;
@@ -102,18 +108,14 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
   const localizer = new ClefGridLocalizer(client, { numLevels: levels });
 
-  const fileBuf = fs.readFileSync(imagePath);
   console.log(
     `Localizing target: ${JSON.stringify(prompt)} in ${imagePath} (${dims.width}x${dims.height})...`
   );
-  // Without external raster imaging dependencies, the TypeScript runner passes the raw image buffer
-  // directly. Offline mock verification relies on recorded golden fixtures matching the cropped geometry,
-  // while live multi-level raster cropping is supported in the Python implementation.
   const result = await localizer.localize(
     {
       width: dims.width,
       height: dims.height,
-      base64: fileBuf.toString('base64'),
+      buffer: fileBuf,
     },
     prompt
   );
