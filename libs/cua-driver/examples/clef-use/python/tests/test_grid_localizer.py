@@ -175,6 +175,54 @@ def test_timeout_deadline_exceeded() -> None:
     assert "deadline" in (result.reason or "")
 
 
+def test_timeout_deadline_zero_returns_abstained_timeout() -> None:
+    call_count = 0
+
+    def dummy_handler(img: Image.Image, prompt: str) -> ClefChoiceResult:
+        nonlocal call_count
+        call_count += 1
+        return ClefChoiceResult(
+            choice="C3",
+            confidence=0.80,
+            probabilities={"C3": 0.80},
+            model="mock",
+            raw_response={},
+        )
+
+    client = ClefClient(mock_handler=dummy_handler)
+    localizer = ClefGridLocalizer(client, num_levels=1, deadline_seconds=0.0)
+    result = localizer.localize(Image.new("RGB", (100, 100)), "target")
+
+    assert result.success is False
+    assert result.status == "abstained_timeout"
+    assert call_count == 0
+
+
+def test_remaining_time_clamped_to_positive_value() -> None:
+    observed_timeout: float | None = None
+
+    class MockClient(ClefClient):
+        def evaluate_grid(self, image: Image.Image, instructions: str, *, criteria=None, timeout=None):
+            nonlocal observed_timeout
+            observed_timeout = timeout
+            return ClefChoiceResult(
+                choice="C3",
+                confidence=0.80,
+                probabilities={"C3": 0.80},
+                model="mock",
+                raw_response={},
+            )
+
+    client = MockClient()
+    localizer = ClefGridLocalizer(client, num_levels=1, deadline_seconds=5.0)
+    result = localizer.localize(Image.new("RGB", (100, 100)), "target")
+
+    assert result.success is True
+    assert observed_timeout is not None
+    assert observed_timeout > 0
+
+
+
 def test_capture_and_target_binding_and_mismatch() -> None:
     f1 = FIXTURES_DIR / "clef-localization-level1.json"
     client = ClefClient(mock_fixture_paths=[f1])

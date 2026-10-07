@@ -1,3 +1,4 @@
+import jpeg from 'jpeg-js';
 import { type ClefChoiceResult, ClefClient } from './clef_adapter.js';
 
 export const COLUMNS = ['A', 'B', 'C', 'D', 'E'] as const;
@@ -40,7 +41,9 @@ export function parseCellName(cellName: string): [number, number] {
   const rowChar = name[1];
   const colIdx = COLUMNS.indexOf(colChar as (typeof COLUMNS)[number]);
   if (colIdx === -1) {
-    throw new Error(`Invalid column: "${colChar}" in cell "${cellName}". Allowed: ${COLUMNS.join(', ')}`);
+    throw new Error(
+      `Invalid column: "${colChar}" in cell "${cellName}". Allowed: ${COLUMNS.join(', ')}`
+    );
   }
   const rowIdx = ROWS.indexOf(rowChar as (typeof ROWS)[number]);
   if (rowIdx === -1) {
@@ -75,13 +78,11 @@ export function clampCropWindow(
     );
   }
 
-  const newLeft = cropW === imageW
-    ? 0
-    : Math.max(0, Math.min(Math.round(centerX - cropW / 2.0), imageW - cropW));
+  const newLeft =
+    cropW === imageW ? 0 : Math.max(0, Math.min(Math.round(centerX - cropW / 2.0), imageW - cropW));
 
-  const newTop = cropH === imageH
-    ? 0
-    : Math.max(0, Math.min(Math.round(centerY - cropH / 2.0), imageH - cropH));
+  const newTop =
+    cropH === imageH ? 0 : Math.max(0, Math.min(Math.round(centerY - cropH / 2.0), imageH - cropH));
 
   const newRight = newLeft + cropW;
   const newBottom = newTop + cropH;
@@ -162,13 +163,17 @@ export function renderGridSvgOverlay(
   // Vertical lines
   for (let c = 1; c < 5; c++) {
     const x = Math.round((c * width) / 5.0);
-    lines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${height}" stroke="${lineColor}" stroke-width="${lineWidth}" />`);
+    lines.push(
+      `<line x1="${x}" y1="0" x2="${x}" y2="${height}" stroke="${lineColor}" stroke-width="${lineWidth}" />`
+    );
   }
 
   // Horizontal lines
   for (let r = 1; r < 5; r++) {
     const y = Math.round((r * height) / 5.0);
-    lines.push(`<line x1="0" y1="${y}" x2="${width}" y2="${y}" stroke="${lineColor}" stroke-width="${lineWidth}" />`);
+    lines.push(
+      `<line x1="0" y1="${y}" x2="${width}" y2="${y}" stroke="${lineColor}" stroke-width="${lineWidth}" />`
+    );
   }
 
   // Highlight rectangle
@@ -210,6 +215,272 @@ export function renderGridOverlay(
   };
 }
 
+export function cropJpegBuffer(
+  jpegBuffer: Buffer,
+  left: number,
+  top: number,
+  width: number,
+  height: number
+): Buffer {
+  const decoded = jpeg.decode(jpegBuffer, { useTArray: true });
+  const cropW = Math.max(1, Math.min(width, decoded.width - left));
+  const cropH = Math.max(1, Math.min(height, decoded.height - top));
+  const croppedData = new Uint8Array(cropW * cropH * 4);
+
+  for (let r = 0; r < cropH; r++) {
+    const srcOffset = ((top + r) * decoded.width + left) * 4;
+    const dstOffset = r * cropW * 4;
+    croppedData.set(decoded.data.subarray(srcOffset, srcOffset + cropW * 4), dstOffset);
+  }
+
+  const encoded = jpeg.encode({ data: croppedData, width: cropW, height: cropH }, 90);
+  return Buffer.from(
+    encoded.data.buffer,
+    encoded.data.byteOffset,
+    encoded.data.byteLength
+  ) as Buffer;
+}
+
+export function renderGridJpegCrop(
+  jpegBuffer: Buffer,
+  cropBox: CropBox,
+  options: {
+    lineColor?: [number, number, number];
+    lineWidth?: number;
+    highlightCell?: string;
+    highlightColor?: [number, number, number];
+  } = {}
+): string | undefined {
+  try {
+    const decoded = jpeg.decode(jpegBuffer, { useTArray: true });
+    const cropW = Math.max(1, Math.min(cropBox.width, decoded.width - cropBox.left));
+    const cropH = Math.max(1, Math.min(cropBox.height, decoded.height - cropBox.top));
+    const croppedData = new Uint8Array(cropW * cropH * 4);
+
+    for (let r = 0; r < cropH; r++) {
+      const srcOffset = ((cropBox.top + r) * decoded.width + cropBox.left) * 4;
+      const dstOffset = r * cropW * 4;
+      croppedData.set(decoded.data.subarray(srcOffset, srcOffset + cropW * 4), dstOffset);
+    }
+
+    const [lr, lg, lb] = options.lineColor || [0, 255, 120];
+    const lw = options.lineWidth || 1;
+
+    // Vertical division lines
+    for (let c = 1; c < 5; c++) {
+      const x = Math.round((c * cropW) / 5.0);
+      for (let dx = 0; dx < lw; dx++) {
+        const px = x + dx;
+        if (px >= cropW) continue;
+        for (let y = 0; y < cropH; y++) {
+          const offset = (y * cropW + px) * 4;
+          croppedData[offset] = lr;
+          croppedData[offset + 1] = lg;
+          croppedData[offset + 2] = lb;
+          croppedData[offset + 3] = 255;
+        }
+      }
+    }
+
+    // Horizontal division lines
+    for (let r = 1; r < 5; r++) {
+      const y = Math.round((r * cropH) / 5.0);
+      for (let dy = 0; dy < lw; dy++) {
+        const py = y + dy;
+        if (py >= cropH) continue;
+        for (let x = 0; x < cropW; x++) {
+          const offset = (py * cropW + x) * 4;
+          croppedData[offset] = lr;
+          croppedData[offset + 1] = lg;
+          croppedData[offset + 2] = lb;
+          croppedData[offset + 3] = 255;
+        }
+      }
+    }
+
+    // Highlight cell if specified
+    if (options.highlightCell) {
+      const [colIdx, rowIdx] = parseCellName(options.highlightCell);
+      const [hr, hg, hb] = options.highlightColor || [255, 60, 60];
+      const hlw = Math.max(2, lw + 1);
+      const x0 = Math.round((colIdx * cropW) / 5.0);
+      const x1 = Math.min(cropW - 1, Math.round(((colIdx + 1) * cropW) / 5.0));
+      const y0 = Math.round((rowIdx * cropH) / 5.0);
+      const y1 = Math.min(cropH - 1, Math.round(((rowIdx + 1) * cropH) / 5.0));
+
+      for (let x = x0; x <= x1; x++) {
+        for (let dy = 0; dy < hlw; dy++) {
+          if (y0 + dy < cropH) {
+            const off = ((y0 + dy) * cropW + x) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+          if (y1 - dy >= 0) {
+            const off = ((y1 - dy) * cropW + x) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+        }
+      }
+      for (let y = y0; y <= y1; y++) {
+        for (let dx = 0; dx < hlw; dx++) {
+          if (x0 + dx < cropW) {
+            const off = (y * cropW + x0 + dx) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+          if (x1 - dx >= 0) {
+            const off = (y * cropW + x1 - dx) * 4;
+            croppedData[off] = hr;
+            croppedData[off + 1] = hg;
+            croppedData[off + 2] = hb;
+            croppedData[off + 3] = 255;
+          }
+        }
+      }
+    }
+
+    const encoded = jpeg.encode({ data: croppedData, width: cropW, height: cropH }, 85);
+    return encoded.data.toString('base64');
+  } catch {
+    return undefined;
+  }
+}
+
+export interface LocalizerImageDimensions {
+  width: number;
+  height: number;
+}
+
+export interface LocalizerImageObject {
+  width?: number;
+  height?: number;
+  base64?: string;
+  dataUri?: string;
+  buffer?: Buffer;
+}
+
+export type LocalizerImageInput = LocalizerImageDimensions | LocalizerImageObject | Buffer | string;
+
+export function getImageDimensionsFromBuffer(buf: Buffer): { width: number; height: number } {
+  // PNG: signature 0x89 0x50 0x4e 0x47
+  if (
+    buf.length >= 24 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    return { width, height };
+  }
+
+  // JPEG: starts with 0xff 0xd8
+  if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    let offset = 2;
+    while (offset < buf.length) {
+      if (buf[offset] !== 0xff) {
+        offset++;
+        continue;
+      }
+      const marker = buf[offset + 1];
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        const height = buf.readUInt16BE(offset + 5);
+        const width = buf.readUInt16BE(offset + 7);
+        return { width, height };
+      }
+      offset += 2 + buf.readUInt16BE(offset + 2);
+    }
+  }
+
+  throw new Error('Unsupported image format or failed to read dimensions from buffer');
+}
+
+export function stripDataUriPrefix(value: string): string {
+  return value.replace(/^data:[^;]+;base64,/, '').trim();
+}
+
+export function resolveImageInput(image: LocalizerImageInput): {
+  width: number;
+  height: number;
+  base64?: string;
+  buffer?: Buffer;
+} {
+  if (Buffer.isBuffer(image)) {
+    const dims = getImageDimensionsFromBuffer(image);
+    return {
+      width: dims.width,
+      height: dims.height,
+      base64: image.toString('base64'),
+      buffer: image,
+    };
+  }
+
+  if (typeof image === 'string') {
+    const rawBase64 = stripDataUriPrefix(image);
+    const buf = Buffer.from(rawBase64, 'base64');
+    const dims = getImageDimensionsFromBuffer(buf);
+    return {
+      width: dims.width,
+      height: dims.height,
+      base64: rawBase64,
+      buffer: buf,
+    };
+  }
+
+  if (typeof image === 'object' && image !== null) {
+    let rawBase64: string | undefined;
+    let buf: Buffer | undefined;
+    if ('buffer' in image && Buffer.isBuffer((image as { buffer?: unknown }).buffer)) {
+      buf = (image as { buffer: Buffer }).buffer;
+      rawBase64 = buf.toString('base64');
+    } else if ('base64' in image && typeof (image as { base64?: unknown }).base64 === 'string') {
+      rawBase64 = stripDataUriPrefix((image as { base64: string }).base64);
+      buf = Buffer.from(rawBase64, 'base64');
+    } else if ('dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string') {
+      rawBase64 = stripDataUriPrefix((image as { dataUri: string }).dataUri);
+      buf = Buffer.from(rawBase64, 'base64');
+    }
+
+    let width =
+      'width' in image && typeof (image as { width?: unknown }).width === 'number'
+        ? (image as { width: number }).width
+        : undefined;
+    let height =
+      'height' in image && typeof (image as { height?: unknown }).height === 'number'
+        ? (image as { height: number }).height
+        : undefined;
+
+    if ((width === undefined || height === undefined) && buf) {
+      const dims = getImageDimensionsFromBuffer(buf);
+      width = dims.width;
+      height = dims.height;
+    }
+
+    if (width === undefined || height === undefined) {
+      throw new Error(
+        'Image dimensions (width, height) must be provided or derivable from image data'
+      );
+    }
+
+    return {
+      width,
+      height,
+      base64: rawBase64,
+      buffer: buf,
+    };
+  }
+
+  throw new Error(`Unsupported image input type: ${typeof image}`);
+}
+
 export interface IterationRecord {
   level: number;
   cropBox: CropBox;
@@ -242,7 +513,9 @@ export interface LocalizationResult {
   }): boolean;
 }
 
-export function createLocalizationResult(init: Omit<LocalizationResult, 'matchesObservation'>): LocalizationResult {
+export function createLocalizationResult(
+  init: Omit<LocalizationResult, 'matchesObservation'>
+): LocalizationResult {
   return {
     ...init,
     matchesObservation(obs) {
@@ -253,13 +526,25 @@ export function createLocalizationResult(init: Omit<LocalizationResult, 'matches
       if (init.targetPid !== undefined && obs.pid !== undefined && obs.pid !== init.targetPid) {
         return false;
       }
-      if (init.targetWindowId !== undefined && obs.windowId !== undefined && obs.windowId !== init.targetWindowId) {
+      if (
+        init.targetWindowId !== undefined &&
+        obs.windowId !== undefined &&
+        obs.windowId !== init.targetWindowId
+      ) {
         return false;
       }
-      if (init.screenshotW !== undefined && obs.width !== undefined && obs.width !== init.screenshotW) {
+      if (
+        init.screenshotW !== undefined &&
+        obs.width !== undefined &&
+        obs.width !== init.screenshotW
+      ) {
         return false;
       }
-      if (init.screenshotH !== undefined && obs.height !== undefined && obs.height !== init.screenshotH) {
+      if (
+        init.screenshotH !== undefined &&
+        obs.height !== undefined &&
+        obs.height !== init.screenshotH
+      ) {
         return false;
       }
       return true;
@@ -316,22 +601,39 @@ export class ClefGridLocalizer {
   }
 
   public async localize(
-    image: { width: number; height: number },
+    image: LocalizerImageInput,
     targetDescription: string,
     options: LocalizeRunOptions = {}
   ): Promise<LocalizationResult> {
-    const rootW = image.width;
-    const rootH = image.height;
+    const resolved = resolveImageInput(image);
+    const rootW = resolved.width;
+    const rootH = resolved.height;
+    const screenshotBase64 = resolved.base64;
+    const screenshotBuf = resolved.buffer;
     let activeCenterX = rootW / 2.0;
     let activeCenterY = rootH / 2.0;
     const records: IterationRecord[] = [];
 
     const effectiveTimeout = options.timeoutMs !== undefined ? options.timeoutMs : this.deadlineMs;
+    if (effectiveTimeout <= 0) {
+      return createLocalizationResult({
+        success: false,
+        status: 'abstained_timeout',
+        targetDescription,
+        captureId: options.captureId,
+        targetPid: options.pid,
+        targetWindowId: options.windowId,
+        screenshotW: rootW,
+        screenshotH: rootH,
+        iterations: records,
+        reason: `Inference deadline ${effectiveTimeout}ms exceeded`,
+      });
+    }
     const startTime = Date.now();
-    const deadline = effectiveTimeout > 0 ? startTime + effectiveTimeout : Infinity;
+    const deadline = Number.isFinite(effectiveTimeout) ? startTime + effectiveTimeout : Infinity;
 
     for (let level = 1; level <= this.numLevels; level++) {
-      if (Date.now() > deadline) {
+      if (Date.now() >= deadline) {
         return createLocalizationResult({
           success: false,
           status: 'abstained_timeout',
@@ -357,17 +659,69 @@ export class ClefGridLocalizer {
       const cropBox = clampCropWindow(activeCenterX, activeCenterY, cropW, cropH, rootW, rootH);
       const overlay = renderGridOverlay({ width: cropW, height: cropH });
 
-      // Support passing an image (base64 string, Buffer, or data URI) with overlay fallback
-      const payloadImage =
-        'base64' in image && typeof (image as { base64?: unknown }).base64 === 'string'
-          ? (image as { base64: string }).base64
-          : 'dataUri' in image && typeof (image as { dataUri?: unknown }).dataUri === 'string'
-          ? (image as { dataUri: string }).dataUri
-          : overlay.svg;
+      // Crop the screenshot window and render the 5x5 grid overlay onto the crop per zoom level,
+      // mirroring the Python implementation so inference coordinates stay aligned with analyzed regions.
+      let payloadImage: string;
+      if (screenshotBuf) {
+        const croppedGridB64 = renderGridJpegCrop(screenshotBuf, cropBox);
+        payloadImage = croppedGridB64 ?? screenshotBase64 ?? overlay.svg;
+      } else {
+        payloadImage = screenshotBase64 ?? overlay.svg;
+      }
 
-      const remainingTimeMs = deadline !== Infinity ? Math.max(0, deadline - Date.now()) : undefined;
+      if (deadline !== Infinity) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          return createLocalizationResult({
+            success: false,
+            status: 'abstained_timeout',
+            targetDescription,
+            captureId: options.captureId,
+            targetPid: options.pid,
+            targetWindowId: options.windowId,
+            screenshotW: rootW,
+            screenshotH: rootH,
+            iterations: records,
+            reason: `Inference deadline ${effectiveTimeout}ms exceeded before level ${level}`,
+          });
+        }
+      }
+
+      const remainingTimeMs =
+        deadline !== Infinity ? Math.max(1, deadline - Date.now()) : undefined;
       const prompt = `Select the grid cell containing ${targetDescription}`;
-      const evalResult = await this.client.evaluateGrid(payloadImage, prompt, undefined, remainingTimeMs);
+
+      let evalResult: ClefChoiceResult;
+      try {
+        evalResult = await this.client.evaluateGrid(
+          payloadImage,
+          prompt,
+          undefined,
+          remainingTimeMs
+        );
+      } catch (err: unknown) {
+        if (
+          err instanceof Error &&
+          (err.name === 'TimeoutError' ||
+            err.name === 'AbortError' ||
+            err.message.toLowerCase().includes('timeout') ||
+            err.message.toLowerCase().includes('aborted'))
+        ) {
+          return createLocalizationResult({
+            success: false,
+            status: 'abstained_timeout',
+            targetDescription,
+            captureId: options.captureId,
+            targetPid: options.pid,
+            targetWindowId: options.windowId,
+            screenshotW: rootW,
+            screenshotH: rootH,
+            iterations: records,
+            reason: `Inference timed out during level ${level}`,
+          });
+        }
+        throw err;
+      }
 
       const [topCell, topConf] = evalResult.topCandidate;
       if (topConf < this.minConfidence) {

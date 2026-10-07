@@ -152,4 +152,25 @@ describe('TypeScript Clef adapter', () => {
       /Malformed response/
     );
   });
+
+  test('buildClefRequest strips data URI prefix without nesting', () => {
+    const withPrefix = buildClefRequest('data:image/png;base64,aW1hZ2U=', 'Locate search icon');
+    assert.deepEqual(withPrefix.images, ['data:image/jpeg;base64,aW1hZ2U=']);
+
+    const raw = buildClefRequest('aW1hZ2U=', 'Locate search icon');
+    assert.deepEqual(raw.images, ['data:image/jpeg;base64,aW1hZ2U=']);
+  });
+
+  test('evaluateGrid with timeoutMs <= 0 aborts without making request', async () => {
+    const client = new ClefClient({
+      accountId: 'dummy-account',
+      apiToken: 'dummy-token',
+    });
+
+    await assert.rejects(
+      () => client.evaluateGrid('dummy-image', 'find icon', undefined, 0),
+      (err: any) => err.name === 'TimeoutError' || err.name === 'AbortError'
+    );
+  });
 });
+

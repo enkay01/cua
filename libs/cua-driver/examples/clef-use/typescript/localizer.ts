@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClefClient } from './clef_adapter.js';
-import { ClefGridLocalizer } from './grid_localizer.js';
+import { ClefGridLocalizer, cropJpegBuffer } from './grid_localizer.js';
 
 function getImageDimensions(filePath: string): { width: number; height: number } {
   const buf = fs.readFileSync(filePath);
@@ -69,14 +69,25 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (!imagePath || !prompt) {
-    console.error('Usage: tsx typescript/localizer.ts --image <path> --prompt <description> [--levels <n>] [--crop-desktop]');
+    console.error(
+      'Usage: tsx typescript/localizer.ts --image <path> --prompt <description> [--levels <n>] [--crop-desktop]'
+    );
     process.exit(1);
   }
 
   let dims = getImageDimensions(imagePath);
+  let fileBuf: Buffer = fs.readFileSync(imagePath);
   if (cropDesktop) {
-    dims = { width: dims.width, height: Math.max(1, dims.height - 1254) };
-    console.log(`Cropped to desktop viewport: ${dims.width}x${dims.height}`);
+    const croppedHeight = Math.max(1, dims.height - 1254);
+    try {
+      fileBuf = cropJpegBuffer(fileBuf, 0, 1254, dims.width, croppedHeight);
+      dims = { width: dims.width, height: croppedHeight };
+      console.log(`Cropped to desktop viewport: ${dims.width}x${dims.height}`);
+    } catch (err: unknown) {
+      console.warn(
+        `Failed to crop desktop viewport image buffer, preserving original geometry: ${err}`
+      );
+    }
   }
 
   let fixturePaths = mockFixtures;
@@ -88,7 +99,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       path.join(baseFixtureDir, 'clef-localization-level2.json'),
       path.join(baseFixtureDir, 'clef-localization-level3.json'),
     ];
-    console.log('No Cloudflare credentials found. Using local golden fixtures for offline verification.');
+    console.log(
+      'No Cloudflare credentials found. Using local golden fixtures for offline verification.'
+    );
   }
 
   const client = new ClefClient({
@@ -98,20 +111,31 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
   const localizer = new ClefGridLocalizer(client, { numLevels: levels });
 
-  console.log(`Localizing target: ${JSON.stringify(prompt)} in ${imagePath} (${dims.width}x${dims.height})...`);
-  const result = await localizer.localize(dims, prompt);
+  console.log(
+    `Localizing target: ${JSON.stringify(prompt)} in ${imagePath} (${dims.width}x${dims.height})...`
+  );
+  const result = await localizer.localize(
+    {
+      width: dims.width,
+      height: dims.height,
+      buffer: fileBuf,
+    },
+    prompt
+  );
 
   console.log(`\nLocalization Result: ${result.status.toUpperCase()}`);
   for (const rec of result.iterations) {
     console.log(
       `  Level ${rec.level}: Winning Cell=${rec.winningCell} (Confidence=${rec.confidence.toFixed(3)}) | ` +
-      `Crop=(${rec.cropBox.left}, ${rec.cropBox.top}, ${rec.cropBox.right}, ${rec.cropBox.bottom}) | ` +
-      `Root Center=(${rec.cellGeometry.rootCenterX.toFixed(1)}, ${rec.cellGeometry.rootCenterY.toFixed(1)})`
+        `Crop=(${rec.cropBox.left}, ${rec.cropBox.top}, ${rec.cropBox.right}, ${rec.cropBox.bottom}) | ` +
+        `Root Center=(${rec.cellGeometry.rootCenterX.toFixed(1)}, ${rec.cellGeometry.rootCenterY.toFixed(1)})`
     );
   }
 
   if (result.success && result.clickX !== undefined && result.clickY !== undefined) {
-    console.log(`\nFinal Click Target: X=${result.clickX.toFixed(1)}, Y=${result.clickY.toFixed(1)}`);
+    console.log(
+      `\nFinal Click Target: X=${result.clickX.toFixed(1)}, Y=${result.clickY.toFixed(1)}`
+    );
   } else {
     console.log(`\nLocalization failed / abstained: ${result.reason}`);
   }

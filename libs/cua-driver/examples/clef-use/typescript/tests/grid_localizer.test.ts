@@ -1,9 +1,15 @@
+import * as fs from 'node:fs';
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClefClient, createClefChoiceResult } from '../clef_adapter.js';
-import { ClefGridLocalizer } from '../grid_localizer.js';
+import {
+  ClefGridLocalizer,
+  cropJpegBuffer,
+  getImageDimensionsFromBuffer,
+  renderGridJpegCrop,
+} from '../grid_localizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,8 +58,7 @@ describe('TypeScript ClefGridLocalizer', () => {
 
   test('abstain on low confidence', async () => {
     const client = new ClefClient({
-      mockHandler: () =>
-        createClefChoiceResult('C3', 0.15, { C3: 0.15, A1: 0.05 }, 'mock', {}),
+      mockHandler: () => createClefChoiceResult('C3', 0.15, { C3: 0.15, A1: 0.05 }, 'mock', {}),
     });
     const localizer = new ClefGridLocalizer(client, { minConfidence: 0.3 });
     const result = await localizer.localize({ width: 500, height: 500 }, 'missing element');
@@ -65,8 +70,7 @@ describe('TypeScript ClefGridLocalizer', () => {
 
   test('abstain on direct non-adjacent ambiguity', async () => {
     const client = new ClefClient({
-      mockHandler: () =>
-        createClefChoiceResult('A1', 0.42, { A1: 0.42, E5: 0.4 }, 'mock', {}),
+      mockHandler: () => createClefChoiceResult('A1', 0.42, { A1: 0.42, E5: 0.4 }, 'mock', {}),
     });
     const localizer = new ClefGridLocalizer(client, { ambiguityMargin: 0.05 });
     const result = await localizer.localize({ width: 500, height: 500 }, 'ambiguous icon');
@@ -118,15 +122,14 @@ describe('TypeScript ClefGridLocalizer', () => {
 
   test('capture and observation matching', async () => {
     const client = new ClefClient({
-      mockHandler: () =>
-        createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {}),
+      mockHandler: () => createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {}),
     });
     const localizer = new ClefGridLocalizer(client, { numLevels: 1 });
-    const result = await localizer.localize(
-      { width: 800, height: 600 },
-      'button',
-      { captureId: 'cap-99', pid: 101, windowId: 202 }
-    );
+    const result = await localizer.localize({ width: 800, height: 600 }, 'button', {
+      captureId: 'cap-99',
+      pid: 101,
+      windowId: 202,
+    });
 
     assert.equal(result.success, true);
     assert.equal(
@@ -163,5 +166,69 @@ describe('TypeScript ClefGridLocalizer', () => {
       () => localizer.localize({ width: 200, height: 200 }, 'test'),
       /exceeds screenshot dimensions/
     );
+  });
+
+  test('screenshot image base64 and dataUri are stripped and passed to evaluateGrid', async () => {
+    let capturedImage: unknown;
+    const client = new ClefClient({
+      mockHandler: (img) => {
+        capturedImage = img;
+        return createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {});
+      },
+    });
+    const localizer = new ClefGridLocalizer(client, { numLevels: 1 });
+
+    // Passing object with dataUri
+    await localizer.localize(
+      { width: 100, height: 100, dataUri: 'data:image/jpeg;base64,QUJD' },
+      'button'
+    );
+    assert.equal(capturedImage, 'QUJD');
+
+    // Passing object with base64
+    await localizer.localize({ width: 100, height: 100, base64: 'REVGRw==' }, 'button');
+    assert.equal(capturedImage, 'REVGRw==');
+  });
+
+  test('timeout deadline <= 0 returns abstained_timeout without unbounded call', async () => {
+    let callCount = 0;
+    const client = new ClefClient({
+      mockHandler: () => {
+        callCount++;
+        return createClefChoiceResult('C3', 0.9, { C3: 0.9 }, 'mock', {});
+      },
+    });
+    const localizer = new ClefGridLocalizer(client, { numLevels: 1, deadlineMs: 0 });
+    const result = await localizer.localize({ width: 100, height: 100 }, 'target');
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'abstained_timeout');
+    assert.equal(callCount, 0);
+  });
+
+  test('cropJpegBuffer crops JPEG image and matches target dimensions', () => {
+    const filePath = path.join(FIXTURES_DIR, 'primeagen-grid-centering-reference.jpg');
+    const buf = fs.readFileSync(filePath);
+    const cropped = cropJpegBuffer(buf, 0, 1254, 1290, 803);
+    const dims = getImageDimensionsFromBuffer(cropped);
+    assert.equal(dims.width, 1290);
+    assert.equal(dims.height, 803);
+  });
+
+  test('renderGridJpegCrop renders 5x5 grid lines on cropped JPEG', () => {
+    const filePath = path.join(FIXTURES_DIR, 'primeagen-grid-centering-reference.jpg');
+    const buf = fs.readFileSync(filePath);
+    const b64 = renderGridJpegCrop(buf, {
+      left: 0,
+      top: 1254,
+      right: 1290,
+      bottom: 2057,
+      width: 1290,
+      height: 803,
+      centerX: 645,
+      centerY: 401.5,
+    });
+    assert.ok(typeof b64 === 'string');
+    assert.ok(b64.length > 0);
   });
 });

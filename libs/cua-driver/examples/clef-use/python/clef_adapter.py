@@ -246,6 +246,9 @@ class ClefClient:
         payload = build_clef_request(b64_image, instructions, criteria=criteria, model=self.model)
 
         effective_timeout = timeout if timeout is not None else float(os.environ.get("CLEF_TIMEOUT", 120.0))
+        if effective_timeout <= 0:
+            raise TimeoutError("Inference timed out before request dispatch")
+
         with httpx.Client(timeout=effective_timeout) as client:
             resp = client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
